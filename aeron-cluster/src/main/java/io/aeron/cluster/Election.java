@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,10 @@
  */
 package io.aeron.cluster;
 
-import io.aeron.*;
+import io.aeron.ChannelUriStringBuilder;
+import io.aeron.CommonContext;
+import io.aeron.Image;
+import io.aeron.Subscription;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.ChangeType;
 import io.aeron.cluster.service.Cluster;
@@ -833,8 +836,9 @@ class Election
 
     private void addLiveLogDestination()
     {
-        // TODO: Handle multicast case
-        final String destination = "aeron:udp?endpoint=" + thisMember.logEndpoint();
+        final String destination = ctx.isLogChannelMultiDestination() ?
+            "aeron:udp?endpoint=" + thisMember.logEndpoint() : ctx.logChannel();
+
         logSubscription.asyncAddDestination(destination);
         consensusModuleAgent.liveLogDestination(destination);
     }

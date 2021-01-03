@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.Supplier;
 
+import static io.aeron.CommonContext.ENDPOINT_PARAM_NAME;
 import static io.aeron.cluster.ConsensusModule.Configuration.*;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_CHANNEL_PROP_NAME;
 import static io.aeron.cluster.service.ClusteredServiceContainer.Configuration.SNAPSHOT_STREAM_ID_PROP_NAME;
@@ -261,7 +262,7 @@ public final class ConsensusModule implements AutoCloseable
     /**
      * Configuration options for cluster.
      */
-    public static class Configuration
+    public static final class Configuration
     {
         /**
          * Type of snapshot for this component.
@@ -997,7 +998,7 @@ public final class ConsensusModule implements AutoCloseable
      * The context will be owned by {@link ConsensusModuleAgent} after a successful
      * {@link ConsensusModule#launch(Context)} and closed via {@link ConsensusModule#close()}.
      */
-    public static class Context implements Cloneable
+    public static final class Context implements Cloneable
     {
         /**
          * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.
@@ -1080,6 +1081,7 @@ public final class ConsensusModule implements AutoCloseable
         private AuthenticatorSupplier authenticatorSupplier;
         private LogPublisher logPublisher;
         private EgressPublisher egressPublisher;
+        private boolean isLogChannelMultiDestination;
 
         /**
          * Perform a shallow copy of the object.
@@ -1305,6 +1307,9 @@ public final class ConsensusModule implements AutoCloseable
             {
                 egressPublisher = new EgressPublisher();
             }
+
+            final ChannelUri channelUri = ChannelUri.parse(logChannel());
+            isLogChannelMultiDestination = channelUri.isUdp() && null == channelUri.get(ENDPOINT_PARAM_NAME);
 
             concludeMarkFile();
         }
@@ -2948,6 +2953,11 @@ public final class ConsensusModule implements AutoCloseable
         EgressPublisher egressPublisher()
         {
             return egressPublisher;
+        }
+
+        boolean isLogChannelMultiDestination()
+        {
+            return isLogChannelMultiDestination;
         }
 
         private void concludeMarkFile()

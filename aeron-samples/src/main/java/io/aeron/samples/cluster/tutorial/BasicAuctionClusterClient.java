@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -191,7 +191,10 @@ public class BasicAuctionClusterClient implements EgressListener
         final int numOfBids = Integer.parseInt(System.getProperty("aeron.cluster.tutorial.numOfBids"));         // <2>
         final int bidIntervalMs = Integer.parseInt(System.getProperty("aeron.cluster.tutorial.bidIntervalMs")); // <3>
 
-        final String ingressEndpoints = ingressEndpoints(Arrays.asList("localhost", "localhost", "localhost"));
+        final String[] hostnames = System.getProperty(
+            "aeron.cluster.tutorial.hostnames", "localhost,localhost,localhost").split(",");
+        final String ingressEndpoints = ingressEndpoints(Arrays.asList(hostnames));
+
         final BasicAuctionClusterClient client = new BasicAuctionClusterClient(customerId, numOfBids, bidIntervalMs);
 
         // tag::connect[]

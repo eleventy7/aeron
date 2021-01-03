@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -137,7 +137,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
     /**
      * Configuration options for the consensus module and service container within a cluster.
      */
-    public static class Configuration
+    public static final class Configuration
     {
         /**
          * Type of snapshot for this service.
@@ -554,7 +554,7 @@ public final class ClusteredServiceContainer implements AutoCloseable
      * The context will be owned by {@link ClusteredServiceAgent} after a successful
      * {@link ClusteredServiceContainer#launch(Context)} and closed via {@link ClusteredServiceContainer#close()}.
      */
-    public static class Context implements Cloneable
+    public static final class Context implements Cloneable
     {
         /**
          * Using an integer because there is no support for boolean. 1 is concluded, 0 is not concluded.

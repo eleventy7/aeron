@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -227,6 +227,29 @@ public class ClusterTest
 
             cluster.stopNode(leader);
             cluster.stopNode(followerA);
+        }
+        catch (final Throwable ex)
+        {
+            cluster.dumpData(testInfo);
+            LangUtil.rethrowUnchecked(ex);
+        }
+    }
+
+    @Test
+    @Timeout(40)
+    public void shouldEchoMessages(final TestInfo testInfo)
+    {
+        cluster = startThreeNodeStaticCluster(NULL_VALUE);
+        try
+        {
+            cluster.awaitLeader();
+            cluster.connectClient();
+
+            final int expectedCount = 10;
+
+            cluster.sendMessages(expectedCount);
+            cluster.awaitResponseMessageCount(expectedCount);
+            cluster.awaitServicesMessageCount(expectedCount);
         }
         catch (final Throwable ex)
         {

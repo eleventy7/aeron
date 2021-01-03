@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -97,17 +97,17 @@ final class LogPublisher
         return publication.sessionId();
     }
 
-    void addPassiveFollower(final String followerLogEndpoint)
+    void addPassiveFollower(final boolean isLogChannelMultiDestination, final String followerLogEndpoint)
     {
-        if (null != publication)
+        if (isLogChannelMultiDestination && null != publication)
         {
             publication.asyncAddDestination("aeron:udp?endpoint=" + followerLogEndpoint);
         }
     }
 
-    void removePassiveFollower(final String followerLogEndpoint)
+    void removePassiveFollower(final boolean isLogChannelMultiDestination, final String followerLogEndpoint)
     {
-        if (null != publication)
+        if (isLogChannelMultiDestination && null != publication)
         {
             publication.asyncRemoveDestination("aeron:udp?endpoint=" + followerLogEndpoint);
         }

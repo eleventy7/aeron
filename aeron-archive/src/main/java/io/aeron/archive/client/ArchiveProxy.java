@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import static io.aeron.archive.client.AeronArchive.Configuration.MESSAGE_TIMEOUT
 /**
  * Proxy class for encapsulating encoding and sending of control protocol messages to an archive.
  */
-public class ArchiveProxy
+public final class ArchiveProxy
 {
     /**
      * Default number of retry attempts to be made when offering requests.

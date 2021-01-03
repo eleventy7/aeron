@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -210,7 +210,7 @@ subprojects {
         }
 
         useJUnitPlatform {
-            excludeTags 'slow'
+            excludeTags 'slow', 'topology'
         }
 
         testLogging {
@@ -770,9 +770,11 @@ project(':aeron-system-tests') {
     dependencies {
         testImplementation project(':aeron-archive')
         testImplementation project(':aeron-test-support')
+        testImplementation project(':aeron-samples')
         testImplementation project(path: ':aeron-client', configuration: 'tests')
         testImplementation project(path: ':aeron-archive', configuration: 'tests')
         testImplementation project(path: ':aeron-cluster')
+        testImplementation files("${System.properties['java.home']}/../lib/tools.jar")
     }
 
     test {
