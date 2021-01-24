@@ -1081,7 +1081,7 @@ public final class ConsensusModule implements AutoCloseable
         private AuthenticatorSupplier authenticatorSupplier;
         private LogPublisher logPublisher;
         private EgressPublisher egressPublisher;
-        private boolean isLogChannelMultiDestination;
+        private boolean isLogMdc;
 
         /**
          * Perform a shallow copy of the object.
@@ -1309,7 +1309,7 @@ public final class ConsensusModule implements AutoCloseable
             }
 
             final ChannelUri channelUri = ChannelUri.parse(logChannel());
-            isLogChannelMultiDestination = channelUri.isUdp() && null == channelUri.get(ENDPOINT_PARAM_NAME);
+            isLogMdc = channelUri.isUdp() && null == channelUri.get(ENDPOINT_PARAM_NAME);
 
             concludeMarkFile();
         }
@@ -1995,7 +1995,7 @@ public final class ConsensusModule implements AutoCloseable
          *
          * @param logFragmentLimit for this clustered service.
          * @return this for a fluent API
-         * @see ClusteredServiceContainer.Configuration#LOG_FRAGMENT_LIMIT_DEFAULT
+         * @see io.aeron.cluster.service.ClusteredServiceContainer.Configuration#LOG_FRAGMENT_LIMIT_DEFAULT
          */
         public Context logFragmentLimit(final int logFragmentLimit)
         {
@@ -2007,7 +2007,7 @@ public final class ConsensusModule implements AutoCloseable
          * Get the fragment limit to be used when polling the log {@link Subscription}.
          *
          * @return the fragment limit to be used when polling the log {@link Subscription}.
-         * @see ClusteredServiceContainer.Configuration#LOG_FRAGMENT_LIMIT_PROP_NAME
+         * @see io.aeron.cluster.service.ClusteredServiceContainer.Configuration#LOG_FRAGMENT_LIMIT_PROP_NAME
          */
         public int logFragmentLimit()
         {
@@ -2955,9 +2955,9 @@ public final class ConsensusModule implements AutoCloseable
             return egressPublisher;
         }
 
-        boolean isLogChannelMultiDestination()
+        boolean isLogMdc()
         {
-            return isLogChannelMultiDestination;
+            return isLogMdc;
         }
 
         private void concludeMarkFile()

@@ -228,11 +228,11 @@ public class ElectionTest
 
         final long t3 = 3;
         election.doWork(t3);
-        verify(electionStateCounter).setOrdered(ElectionState.FOLLOWER_TRANSITION.code());
+        verify(electionStateCounter).setOrdered(ElectionState.FOLLOWER_LOG_INIT.code());
 
         final long t4 = 4;
         election.doWork(t4);
-        verify(electionStateCounter).setOrdered(ElectionState.FOLLOWER_JOIN.code());
+        verify(electionStateCounter).setOrdered(ElectionState.FOLLOWER_LOG_AWAIT.code());
 
         final long t5 = 5;
         election.doWork(t5);
@@ -277,30 +277,6 @@ public class ElectionTest
         final long t3 = t2 + 1;
         election.doWork(t3);
         verify(electionStateCounter).setOrdered(ElectionState.NOMINATE.code());
-    }
-
-    @Test
-    public void shouldCanvassMembersInUnSuccessfulLeadershipBid()
-    {
-        final long leadershipTermId = Aeron.NULL_VALUE;
-        final long logPosition = 0;
-        final ClusterMember[] clusterMembers = prepareClusterMembers();
-        final ClusterMember followerMember = clusterMembers[0];
-
-        final Election election = newElection(leadershipTermId, logPosition, clusterMembers, followerMember);
-
-        final long t1 = 1;
-        election.doWork(t1);
-        verify(electionStateCounter).setOrdered(ElectionState.CANVASS.code());
-
-        final long t2 = t1 + ctx.electionStatusIntervalNs();
-        election.doWork(t2);
-
-        election.onCanvassPosition(leadershipTermId + 1, logPosition, 1);
-        election.onCanvassPosition(leadershipTermId, logPosition, 2);
-
-        final long t3 = t2 + 1;
-        election.doWork(t3);
     }
 
     @Test

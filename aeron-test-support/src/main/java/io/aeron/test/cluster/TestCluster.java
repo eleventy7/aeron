@@ -30,10 +30,7 @@ import io.aeron.driver.ThreadingMode;
 import io.aeron.logbuffer.Header;
 import io.aeron.test.DataCollector;
 import io.aeron.test.Tests;
-import org.agrona.BitUtil;
-import org.agrona.CloseHelper;
-import org.agrona.DirectBuffer;
-import org.agrona.ExpandableArrayBuffer;
+import org.agrona.*;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.EpochClock;
 import org.agrona.concurrent.NoOpLock;
@@ -63,8 +60,8 @@ public class TestCluster implements AutoCloseable
     private static final String LOG_CHANNEL = "aeron:udp?term-length=512k";
     // Use for testing cluster with multicast
     // TODO: Parameterise tests with this.
-//    private static final String LOG_CHANNEL =
-//        "aeron:udp?term-length=512k|endpoint=224.20.30.39:24326|interface=localhost";
+    // private static final String LOG_CHANNEL =
+    //     "aeron:udp?term-length=512k|endpoint=224.20.30.39:24326|interface=localhost";
     private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL =
         "aeron:udp?term-length=64k|endpoint=localhost:8010";
     private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL =
@@ -104,7 +101,12 @@ public class TestCluster implements AutoCloseable
             }
             else if (EventCode.CLOSED == code && shouldErrorOnClientClose)
             {
-                throw new ClusterException("session closed due to " + detail);
+                final String msg = "session closed due to " + detail;
+
+                System.err.println("*** " + msg);
+                System.err.println(SystemUtil.threadDump());
+
+                throw new ClusterException(msg);
             }
         }
 
@@ -289,6 +291,7 @@ public class TestCluster implements AutoCloseable
             .archiveContext(context.aeronArchiveContext.clone()
                 .controlRequestChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL)
                 .controlResponseChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL))
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(10))
             .deleteDirOnStart(cleanStart);
 
         context.serviceContainerContext
@@ -357,6 +360,7 @@ public class TestCluster implements AutoCloseable
             .archiveContext(context.aeronArchiveContext.clone()
                 .controlRequestChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL)
                 .controlResponseChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL))
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(10))
             .deleteDirOnStart(cleanStart);
 
         context.serviceContainerContext
@@ -425,6 +429,7 @@ public class TestCluster implements AutoCloseable
             .archiveContext(context.aeronArchiveContext.clone()
                 .controlRequestChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL)
                 .controlResponseChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL))
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(10))
             .deleteDirOnStart(false);
 
         context.serviceContainerContext
@@ -546,6 +551,7 @@ public class TestCluster implements AutoCloseable
             .archiveContext(context.aeronArchiveContext.clone()
                 .controlRequestChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL)
                 .controlResponseChannel(ARCHIVE_LOCAL_CONTROL_CHANNEL))
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(10))
             .deleteDirOnStart(false);
 
         context.serviceContainerContext
@@ -748,9 +754,9 @@ public class TestCluster implements AutoCloseable
         }
     }
 
-    public void awaitLeadershipEvent(final int count)
+    public void awaitNewLeadershipEvent(final int count)
     {
-        while (newLeaderEvent.get() < count)
+        while (newLeaderEvent.get() < count || !client.ingressPublication().isConnected())
         {
             Tests.sleep(1);
             client.pollEgress();
@@ -954,7 +960,7 @@ public class TestCluster implements AutoCloseable
         {
             if (null != node)
             {
-                node.terminationExpected(isExpected);
+                node.isTerminationExpected(isExpected);
             }
         }
     }
@@ -1233,6 +1239,7 @@ public class TestCluster implements AutoCloseable
             .logChannel(LOG_CHANNEL)
             .archiveContext(nodeCtx.aeronArchiveCtx.clone())
             .snapshotChannel(SNAPSHOT_CHANNEL_DEFAULT + "|term-length=64k")
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(10))
             .deleteDirOnStart(cleanStart);
 
         return nodeCtx;

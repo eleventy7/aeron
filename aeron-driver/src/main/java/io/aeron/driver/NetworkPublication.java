@@ -78,11 +78,12 @@ class NetworkPublicationPadding2 extends NetworkPublicationConductorFields
 
 class NetworkPublicationSenderFields extends NetworkPublicationPadding2
 {
-    long timeOfLastSendOrHeartbeatNs;
+    long timeOfLastDataOrHeartbeatNs;
     long timeOfLastSetupNs;
     long timeOfLastStatusMessageNs;
     boolean trackSenderLimits = false;
-    boolean shouldSendSetupFrame = true;
+    boolean isSetupElicited = false;
+    boolean hasInitialConnection = false;
 }
 
 class NetworkPublicationPadding3 extends NetworkPublicationSenderFields
@@ -96,7 +97,7 @@ class NetworkPublicationPadding3 extends NetworkPublicationSenderFields
 /**
  * Publication to be sent to connected subscribers.
  */
-public class NetworkPublication
+public final class NetworkPublication
     extends NetworkPublicationPadding3
     implements RetransmitSender, DriverManagedResource, Subscribable
 {
@@ -225,7 +226,7 @@ public class NetworkPublication
         termLengthMask = termLength - 1;
 
         final long nowNs = nanoClock.nanoTime();
-        timeOfLastSendOrHeartbeatNs = nowNs - PUBLICATION_HEARTBEAT_TIMEOUT_NS - 1;
+        timeOfLastDataOrHeartbeatNs = nowNs - PUBLICATION_HEARTBEAT_TIMEOUT_NS - 1;
         timeOfLastSetupNs = nowNs - PUBLICATION_SETUP_TIMEOUT_NS - 1;
         timeOfLastStatusMessageNs = nowNs;
 
@@ -303,12 +304,15 @@ public class NetworkPublication
         return streamId;
     }
 
+    /**
+     * Trigger the sending of a SETUP frame so a connection can be established.
+     */
     public void triggerSendSetupFrame()
     {
         if (!isEndOfStream)
         {
             timeOfLastStatusMessageNs = nanoClock.nanoTime();
-            shouldSendSetupFrame = true;
+            isSetupElicited = true;
         }
     }
 
@@ -348,16 +352,34 @@ public class NetworkPublication
         }
     }
 
+    /**
+     * Process a NAK message so a retransmit can occur.
+     *
+     * @param termId     in which the loss occurred.
+     * @param termOffset at which the loss begins.
+     * @param length     of the loss.
+     */
     public void onNak(final int termId, final int termOffset, final int length)
     {
         retransmitHandler.onNak(termId, termOffset, length, termBufferLength, this);
     }
 
+    /**
+     * Process a status message to track connectivity and apply flow control.
+     *
+     * @param msg        flyweight over the network packet.
+     * @param srcAddress that the setup message has come from.
+     */
     public void onStatusMessage(final StatusMessageFlyweight msg, final InetSocketAddress srcAddress)
     {
         if (!hasReceivers)
         {
             hasReceivers = true;
+        }
+
+        if (!hasInitialConnection)
+        {
+            hasInitialConnection = true;
         }
 
         final long timeNs = nanoClock.nanoTime();
@@ -378,6 +400,12 @@ public class NetworkPublication
         }
     }
 
+    /**
+     * Process a RTT (Round Trip Timing) message from a receiver.
+     *
+     * @param msg        flyweight over the network packet.
+     * @param srcAddress that the RTT message has come from.
+     */
     public void onRttMeasurement(final RttMeasurementFlyweight msg, final InetSocketAddress srcAddress)
     {
         if (RttMeasurementFlyweight.REPLY_FLAG == (msg.flags() & RttMeasurementFlyweight.REPLY_FLAG))
@@ -444,13 +472,13 @@ public class NetworkPublication
         }
     }
 
-    final int send(final long nowNs)
+    int send(final long nowNs)
     {
         final long senderPosition = this.senderPosition.get();
         final int activeTermId = computeTermIdFromPosition(senderPosition, positionBitsToShift, initialTermId);
         final int termOffset = (int)senderPosition & termLengthMask;
 
-        if (shouldSendSetupFrame)
+        if (!hasInitialConnection || isSetupElicited)
         {
             setupMessageCheck(nowNs, activeTermId, termOffset);
         }
@@ -535,7 +563,7 @@ public class NetworkPublication
      *
      * @return 1 if the limit has been updated otherwise 0.
      */
-    final int updatePublisherLimit()
+    int updatePublisherLimit()
     {
         int workCount = 0;
 
@@ -575,7 +603,7 @@ public class NetworkPublication
         return hasSpies;
     }
 
-    final void updateHasReceivers(final long timeNs)
+    void updateHasReceivers(final long timeNs)
     {
         if (((timeOfLastStatusMessageNs + connectionTimeoutNs) - timeNs < 0) && hasReceivers)
         {
@@ -601,7 +629,7 @@ public class NetworkPublication
 
                 if (available == channelEndpoint.send(sendBuffer))
                 {
-                    timeOfLastSendOrHeartbeatNs = nowNs;
+                    timeOfLastDataOrHeartbeatNs = nowNs;
                     trackSenderLimits = true;
 
                     bytesSent = available;
@@ -628,7 +656,6 @@ public class NetworkPublication
         if ((timeOfLastSetupNs + PUBLICATION_SETUP_TIMEOUT_NS) - nowNs < 0)
         {
             timeOfLastSetupNs = nowNs;
-            timeOfLastSendOrHeartbeatNs = nowNs;
 
             setupBuffer.clear();
             setupHeader
@@ -646,9 +673,9 @@ public class NetworkPublication
                 shortSends.increment();
             }
 
-            if (hasReceivers)
+            if (isSetupElicited && hasReceivers)
             {
-                shouldSendSetupFrame = false;
+                isSetupElicited = false;
             }
         }
     }
@@ -658,7 +685,7 @@ public class NetworkPublication
     {
         int bytesSent = 0;
 
-        if ((timeOfLastSendOrHeartbeatNs + PUBLICATION_HEARTBEAT_TIMEOUT_NS) - nowNs < 0)
+        if (hasInitialConnection && (timeOfLastDataOrHeartbeatNs + PUBLICATION_HEARTBEAT_TIMEOUT_NS) - nowNs < 0)
         {
             heartbeatBuffer.clear();
             heartbeatDataHeader
@@ -674,7 +701,7 @@ public class NetworkPublication
                 shortSends.increment();
             }
 
-            timeOfLastSendOrHeartbeatNs = nowNs;
+            timeOfLastDataOrHeartbeatNs = nowNs;
             heartbeatsSent.incrementOrdered();
         }
 
@@ -918,7 +945,7 @@ public class NetworkPublication
         ++refCount;
     }
 
-    final State state()
+    State state()
     {
         return state;
     }
