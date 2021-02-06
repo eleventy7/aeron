@@ -595,7 +595,7 @@ class Election
 
     private int leaderInit(final long nowNs)
     {
-        consensusModuleAgent.becomeLeader(leadershipTermId, logPosition, logSessionId, isLeaderStartup);
+        consensusModuleAgent.joinLogAsLeader(leadershipTermId, logPosition, logSessionId, isLeaderStartup);
         updateRecordingLog(nowNs);
         state(LEADER_READY, nowNs);
 
@@ -675,7 +675,7 @@ class Election
         if (null != image)
         {
             verifyLogImage(image);
-            consensusModuleAgent.followLog(image, isLeaderStartup);
+            consensusModuleAgent.joinLogAsFollower(image, leadershipTermId, isLeaderStartup);
             state(FOLLOWER_CATCHUP, nowNs);
             workCount += 1;
         }
@@ -709,11 +709,11 @@ class Election
 
         if (ctx.commitPositionCounter().getWeak() >= catchupPosition)
         {
+            timeOfLastUpdateNs = 0;
             logPosition = catchupPosition;
             appendPosition = catchupPosition;
-            updateRecordingLog(nowNs);
             consensusModuleAgent.leadershipTermId(leadershipTermId);
-            timeOfLastUpdateNs = 0;
+            updateRecordingLog(nowNs);
             state(FOLLOWER_LOG_INIT, nowNs);
             workCount += 1;
         }
@@ -746,7 +746,7 @@ class Election
         {
             verifyLogImage(image);
             consensusModuleAgent.leadershipTermId(leadershipTermId);
-            consensusModuleAgent.followLog(image, isLeaderStartup);
+            consensusModuleAgent.joinLogAsFollower(image, leadershipTermId, isLeaderStartup);
             updateRecordingLog(nowNs);
             state(FOLLOWER_READY, nowNs);
             workCount += 1;

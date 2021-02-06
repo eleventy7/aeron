@@ -43,7 +43,7 @@ typedef struct aeron_header_stct aeron_header_t;
 
 #pragma pack(push)
 #pragma pack(4)
-typedef struct aeron_header_values_frame_stct
+struct aeron_header_values_frame_stct
 {
     int32_t frame_length;
     int8_t version;
@@ -54,8 +54,8 @@ typedef struct aeron_header_values_frame_stct
     int32_t stream_id;
     int32_t term_id;
     int64_t reserved_value;
-}
-aeron_header_values_frame_t;
+};
+typedef struct aeron_header_values_frame_stct aeron_header_values_frame_t;
 
 typedef struct aeron_header_values_stct
 {
@@ -1069,11 +1069,7 @@ int aeron_publication_async_add_destination(
  * @param uri for the destination to remove.
  * @return 0 for success and -1 for error.
  */
-int aeron_publication_async_remove_destination(
-    aeron_async_destination_t **async,
-    aeron_t *client,
-    aeron_publication_t *publication,
-    const char *uri);
+int aeron_publication_async_remove_destination(aeron_async_destination_t **async, aeron_t *client, aeron_publication_t *publication, const char *uri);
 
 /**
  * Poll the completion of the add/remove of a destination to/from a publication.
@@ -1705,7 +1701,7 @@ int aeron_subscription_resolved_endpoint(aeron_subscription_t *subscription, con
  * @param subscription to query
  * @param uri buffer to hold the resolved uri
  * @param uri_len length of the buffer
- * @return -1 on failure or the number of bytes written to the buffer (excluding the NULL terminator).  Writing is done
+ * @return -1 on failure or the number of bytes written to the buffer (excluding the NULL terminator). Writing is done
  * on a per key basis, so if the buffer was truncated before writing completed, it will only include the byte count up
  * to the key that overflowed. However, the invariant that if the number returned >= uri_len, then output will have been
  * truncated.
@@ -2394,7 +2390,7 @@ size_t aeron_cnc_error_log_read(
     int64_t since_timestamp);
 
 /**
- * Gets a counters reader for this command and control file.  This does not need to be closed manually, resources
+ * Gets a counters reader for this command and control file. This does not need to be closed manually, resources
  * are tied to the instance of aeron_cnc.
  *
  * @param aeron_cnc to query

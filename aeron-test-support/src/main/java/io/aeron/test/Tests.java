@@ -22,12 +22,14 @@ import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.RegistrationException;
 import io.aeron.exceptions.TimeoutException;
 import org.agrona.LangUtil;
+import org.agrona.SystemUtil;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.SleepingMillisIdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 
+import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.IntConsumer;
@@ -36,9 +38,33 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doAnswer;
 
+/**
+ * Utilities to help with writing tests.
+ */
 public class Tests
 {
     public static final IdleStrategy SLEEP_1_MS = new SleepingMillisIdleStrategy(1);
+
+    /**
+     * Set a private field in a class for testing.
+     *
+     * @param instance  of the object to set the field value.
+     * @param fieldName to be set.
+     * @param value     to be set on the field.
+     */
+    public static void setField(final Object instance, final String fieldName, final Object value)
+    {
+        try
+        {
+            final Field field = instance.getClass().getDeclaredField(fieldName);
+            field.setAccessible(true);
+            field.set(instance, value);
+        }
+        catch (final Throwable t)
+        {
+            LangUtil.rethrowUnchecked(t);
+        }
+    }
 
     /**
      * Check if the interrupt flag has been set on the current thread and fail the test if it has.
@@ -48,7 +74,7 @@ public class Tests
      */
     public static void checkInterruptStatus()
     {
-        if (Thread.interrupted())
+        if (Thread.currentThread().isInterrupted())
         {
             unexpectedInterruptStackTrace(null);
             fail("unexpected interrupt");
@@ -65,7 +91,7 @@ public class Tests
      */
     public static void checkInterruptStatus(final Supplier<String> messageSupplier)
     {
-        if (Thread.interrupted())
+        if (Thread.currentThread().isInterrupted())
         {
             final String message = messageSupplier.get();
             unexpectedInterruptStackTrace(message);
@@ -85,7 +111,7 @@ public class Tests
      */
     public static void checkInterruptStatus(final String format, final Object... args)
     {
-        if (Thread.interrupted())
+        if (Thread.currentThread().isInterrupted())
         {
             final String message = String.format(format, args);
             unexpectedInterruptStackTrace(message);
@@ -95,7 +121,7 @@ public class Tests
 
     public static void checkInterruptStatus(final String message)
     {
-        if (Thread.interrupted())
+        if (Thread.currentThread().isInterrupted())
         {
             unexpectedInterruptStackTrace(message);
             fail("unexpected interrupt - " + message);
@@ -112,7 +138,10 @@ public class Tests
             sb.append(" - ").append(message);
         }
 
-        System.out.println(appendStackTrace(sb).toString());
+        appendStackTrace(sb).append('\n');
+
+        System.out.println(sb.toString());
+        System.out.println(SystemUtil.threadDump());
     }
 
     public static StringBuilder appendStackTrace(final StringBuilder sb)
@@ -312,7 +341,7 @@ public class Tests
         while ((counterValue = counter.get()) < value)
         {
             Thread.yield();
-            if (Thread.interrupted())
+            if (Thread.currentThread().isInterrupted())
             {
                 unexpectedInterruptStackTrace("awaiting=" + value + " counter=" + counterValue);
                 fail("unexpected interrupt");
@@ -326,7 +355,7 @@ public class Tests
         while ((counterValue = counter.get()) < value)
         {
             Thread.yield();
-            if (Thread.interrupted())
+            if (Thread.currentThread().isInterrupted())
             {
                 unexpectedInterruptStackTrace("awaiting=" + value + " counter=" + counterValue);
                 fail("unexpected interrupt");
@@ -345,10 +374,7 @@ public class Tests
     }
 
     public static void awaitCounterDelta(
-        final CountersReader reader,
-        final int counterId,
-        final long initialValue,
-        final long delta)
+        final CountersReader reader, final int counterId, final long initialValue, final long delta)
     {
         final long expectedValue = initialValue + delta;
         final Supplier<String> counterMessage = () ->

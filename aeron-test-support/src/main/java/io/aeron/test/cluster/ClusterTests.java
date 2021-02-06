@@ -71,12 +71,13 @@ public class ClusterTests
             {
                 if (ex instanceof AeronException && ((AeronException)ex).category() == AeronException.Category.WARN)
                 {
-                    WARNING.set(ex);
+                    addWarning(ex);
                     return;
                 }
 
                 if (ex instanceof AgentTerminationException)
                 {
+                    addWarning(ex);
                     return;
                 }
 
@@ -103,6 +104,29 @@ public class ClusterTests
         }
     }
 
+    public static void addWarning(final Throwable ex)
+    {
+        final Throwable warning = WARNING.get();
+        if (null == warning)
+        {
+            WARNING.set(ex);
+        }
+        else if (warning != ex)
+        {
+            warning.addSuppressed(ex);
+        }
+    }
+
+    public static void printWarning()
+    {
+        final Throwable warning = WARNING.get();
+        if (null != warning)
+        {
+            System.err.println("*** Warning captured ***");
+            warning.printStackTrace();
+        }
+    }
+
     public static void failOnClusterError()
     {
         final Throwable error = ERROR.getAndSet(null);
@@ -126,7 +150,7 @@ public class ClusterTests
         }
     }
 
-    public static Thread startMessageThread(final TestCluster cluster, final long backoffIntervalNs)
+    public static Thread startPublisherThread(final TestCluster cluster, final long backoffIntervalNs)
     {
         final Thread thread = new Thread(
             () ->

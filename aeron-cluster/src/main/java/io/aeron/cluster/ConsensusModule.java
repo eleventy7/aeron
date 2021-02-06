@@ -605,14 +605,14 @@ public final class ConsensusModule implements AutoCloseable
         public static final int ERROR_BUFFER_LENGTH_DEFAULT = 1024 * 1024;
 
         /**
-         * Timeout waiting for follower termination by leader.
+         * Timeout a leader will wait on getting termination acks from followers.
          */
         public static final String TERMINATION_TIMEOUT_PROP_NAME = "aeron.cluster.termination.timeout";
 
         /**
-         * Timeout waiting for follower termination by leader default value.
+         * Default timeout a leader will wait on getting termination acks from followers.
          */
-        public static final long TERMINATION_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(5);
+        public static final long TERMINATION_TIMEOUT_DEFAULT_NS = TimeUnit.SECONDS.toNanos(10);
 
         /**
          * Resolution in nanoseconds for each tick of the timer wheel for scheduling deadlines.
@@ -1270,6 +1270,16 @@ public final class ConsensusModule implements AutoCloseable
                     .controlRequestChannel(AeronArchive.Configuration.localControlChannel())
                     .controlResponseChannel(AeronArchive.Configuration.localControlChannel())
                     .controlRequestStreamId(AeronArchive.Configuration.localControlStreamId());
+            }
+
+            if (!archiveContext.controlRequestChannel().startsWith(CommonContext.IPC_CHANNEL))
+            {
+                throw new ClusterException("archive control must be IPC");
+            }
+
+            if (!archiveContext.controlResponseChannel().startsWith(CommonContext.IPC_CHANNEL))
+            {
+                throw new ClusterException("archive control must be IPC");
             }
 
             archiveContext

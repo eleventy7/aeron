@@ -15,13 +15,13 @@
  */
 package io.aeron.cluster;
 
+import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.test.SlowTest;
 import io.aeron.test.Tests;
 import io.aeron.test.cluster.TestCluster;
 import io.aeron.test.cluster.TestNode;
 import org.agrona.CloseHelper;
-import org.agrona.LangUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
@@ -74,8 +74,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -96,8 +95,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -122,8 +120,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -156,8 +153,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -192,8 +188,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -230,8 +225,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -253,8 +247,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -293,8 +286,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -317,8 +309,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -346,8 +337,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -380,8 +370,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -413,8 +402,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -438,9 +426,8 @@ public class ClusterTest
             cluster.awaitSnapshotCount(leader, 1);
             cluster.awaitSnapshotCount(followerA, 1);
 
-            cluster.connectClient();
-
             final int messageCount = 10;
+            cluster.connectClient();
             cluster.sendMessages(messageCount);
             cluster.awaitResponseMessageCount(messageCount);
 
@@ -454,8 +441,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -479,16 +465,15 @@ public class ClusterTest
 
             cluster.stopNode(secondLeader);
             cluster.awaitLeader();
-            cluster.connectClient();
 
             final int messageCount = 10;
+            cluster.connectClient();
             cluster.sendMessages(messageCount);
             cluster.awaitResponseMessageCount(messageCount);
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -505,7 +490,6 @@ public class ClusterTest
             cluster.connectClient();
             cluster.sendMessages(messageCount);
             cluster.awaitResponseMessageCount(messageCount);
-
             cluster.closeClient();
 
             cluster.awaitActiveSessionCount(cluster.followers().get(0), 0);
@@ -516,12 +500,8 @@ public class ClusterTest
             final TestNode secondLeader = cluster.awaitLeader();
             cluster.stopNode(secondLeader);
 
-            final TestNode restartedFirstLeader = cluster.startStaticNode(firstLeader.index(), false);
-            final TestNode restartedSecondLeader = cluster.startStaticNode(secondLeader.index(), false);
-
-            awaitElectionClosed(restartedFirstLeader);
-            awaitElectionClosed(restartedSecondLeader);
-
+            cluster.startStaticNode(firstLeader.index(), false);
+            cluster.startStaticNode(secondLeader.index(), false);
             cluster.awaitLeader();
 
             cluster.connectClient();
@@ -531,8 +511,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -564,9 +543,8 @@ public class ClusterTest
             assertEquals(FOLLOWER, followerA.role());
             assertEquals(FOLLOWER, followerB.role());
 
-            cluster.connectClient();
-
             final int messageCount = 10;
+            cluster.connectClient();
             cluster.sendMessages(messageCount);
             cluster.awaitResponseMessageCount(messageCount);
             cluster.awaitServiceMessageCount(followerA, messageCount);
@@ -574,8 +552,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -635,8 +612,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -685,8 +661,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -719,8 +694,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -754,19 +728,19 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
     @Test
-    @Timeout(40)
+    @Timeout(30)
     public void shouldTerminateLeaderWhenServiceStops(final TestInfo testInfo)
     {
         cluster = startThreeNodeStaticCluster(NULL_VALUE);
         try
         {
             final TestNode leader = cluster.awaitLeader();
+            cluster.connectClient();
 
             leader.isTerminationExpected(true);
             leader.container().close();
@@ -775,11 +749,42 @@ public class ClusterTest
             {
                 Tests.sleep(1);
             }
+
+            cluster.awaitNewLeadershipEvent(1);
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    public void shouldEnterElectionWhenRecordingStopsOnLeader(final TestInfo testInfo)
+    {
+        cluster = startThreeNodeStaticCluster(NULL_VALUE);
+        try
+        {
+            final TestNode leader = cluster.awaitLeader();
+            cluster.connectClient();
+
+            final AeronArchive.Context archiveCtx = new AeronArchive.Context()
+                .controlRequestChannel(leader.archive().context().localControlChannel())
+                .controlResponseChannel(leader.archive().context().localControlChannel())
+                .controlRequestStreamId(leader.archive().context().localControlStreamId())
+                .aeronDirectoryName(leader.mediaDriver().aeronDirectoryName());
+
+            try (AeronArchive archive = AeronArchive.connect(archiveCtx))
+            {
+                final int firstRecordingIdIsTheClusterLog = 0;
+                assertTrue(archive.tryStopRecordingByIdentity(firstRecordingIdIsTheClusterLog));
+            }
+
+            cluster.awaitNewLeadershipEvent(1);
+        }
+        catch (final Throwable ex)
+        {
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -810,8 +815,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -829,7 +833,7 @@ public class ClusterTest
 
             cluster.connectClient();
             final long backoffIntervalNs = MICROSECONDS.toNanos(500);
-            final Thread messageThread = startMessageThread(cluster, backoffIntervalNs);
+            final Thread messageThread = startPublisherThread(cluster, backoffIntervalNs);
 
             try
             {
@@ -860,8 +864,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -891,8 +894,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -908,8 +910,8 @@ public class ClusterTest
             final TestNode followerA = followers.get(0);
             final TestNode followerB = followers.get(1);
 
-            cluster.connectClient();
             final int messageCount = 10;
+            cluster.connectClient();
             cluster.sendMessages(messageCount);
             cluster.awaitResponseMessageCount(messageCount);
 
@@ -943,8 +945,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -958,8 +959,8 @@ public class ClusterTest
             final TestNode leader = cluster.awaitLeader();
             final List<TestNode> followers = cluster.followers();
 
-            cluster.connectClient();
             final int messageCount = 50_000;
+            cluster.connectClient();
             cluster.msgBuffer().putStringWithoutLengthAscii(0, NO_OP_MSG);
             for (int i = 0; i < messageCount; i++)
             {
@@ -988,8 +989,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1002,10 +1002,11 @@ public class ClusterTest
         {
             final TestNode leader = cluster.awaitLeader();
 
+            int messageCount = 2;
             cluster.connectClient();
-            cluster.sendMessages(2);
-            cluster.awaitResponseMessageCount(2);
-            cluster.awaitServiceMessageCount(cluster.node(2), 2);
+            cluster.sendMessages(messageCount);
+            cluster.awaitResponseMessageCount(messageCount);
+            cluster.awaitServiceMessageCount(cluster.node(2), messageCount);
 
             cluster.takeSnapshot(leader);
             final int memberCount = 3;
@@ -1018,8 +1019,9 @@ public class ClusterTest
             }
 
             cluster.sendMessages(1);
-            cluster.awaitResponseMessageCount(3);
-            cluster.awaitServiceMessageCount(cluster.node(2), 3);
+            messageCount++;
+            cluster.awaitResponseMessageCount(messageCount);
+            cluster.awaitServiceMessageCount(cluster.node(2), messageCount);
 
             cluster.terminationsExpected(true);
 
@@ -1044,21 +1046,20 @@ public class ClusterTest
             assertTrue(cluster.node(1).service().wasSnapshotLoaded());
             assertFalse(cluster.node(2).service().wasSnapshotLoaded());
 
-            assertEquals(3, cluster.node(0).service().messageCount());
-            assertEquals(3, cluster.node(1).service().messageCount());
-            assertEquals(3, cluster.node(2).service().messageCount());
+            assertEquals(messageCount, cluster.node(0).service().messageCount());
+            assertEquals(messageCount, cluster.node(1).service().messageCount());
+            assertEquals(messageCount, cluster.node(2).service().messageCount());
 
-            final int msgCountAfterStart = 4;
-            final int totalMsgCount = 2 + 1 + 4;
+            final int messageCountAfterStart = 4;
             cluster.reconnectClient();
-            cluster.sendMessages(msgCountAfterStart);
-            cluster.awaitResponseMessageCount(totalMsgCount);
-            cluster.awaitServicesMessageCount(totalMsgCount);
+            cluster.sendMessages(messageCountAfterStart);
+            messageCount += messageCountAfterStart;
+            cluster.awaitResponseMessageCount(messageCount);
+            cluster.awaitServicesMessageCount(messageCount);
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1092,8 +1093,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1105,9 +1105,9 @@ public class ClusterTest
         try
         {
             final TestNode leader0 = cluster.awaitLeader();
-            cluster.connectClient();
 
             final int numMessages = 3;
+            cluster.connectClient();
             cluster.sendMessages(numMessages);
             cluster.awaitServicesMessageCount(numMessages);
 
@@ -1141,8 +1141,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1154,9 +1153,9 @@ public class ClusterTest
         try
         {
             final TestNode leader0 = cluster.awaitLeader();
-            cluster.connectClient();
 
             final int numMessages = 3;
+            cluster.connectClient();
             cluster.sendMessages(numMessages);
             cluster.awaitResponseMessageCount(numMessages);
             cluster.awaitServicesMessageCount(numMessages);
@@ -1183,8 +1182,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1196,9 +1194,9 @@ public class ClusterTest
         try
         {
             final TestNode leader0 = cluster.awaitLeader();
-            cluster.connectClient();
 
             final int numMessages = 3;
+            cluster.connectClient();
             cluster.sendMessages(numMessages);
             cluster.awaitResponseMessageCount(numMessages);
             cluster.awaitServicesMessageCount(numMessages);
@@ -1239,8 +1237,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1270,16 +1267,14 @@ public class ClusterTest
         cluster = startThreeNodeStaticCluster(NULL_VALUE);
         try
         {
-            cluster.connectClient(clientCtx);
-
             final int numMessages = 10;
+            cluster.connectClient(clientCtx);
             cluster.sendMessages(numMessages);
             cluster.awaitResponseMessageCount(numMessages);
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 
@@ -1307,8 +1302,7 @@ public class ClusterTest
         }
         catch (final Throwable ex)
         {
-            cluster.dumpData(testInfo);
-            LangUtil.rethrowUnchecked(ex);
+            cluster.dumpData(testInfo, ex);
         }
     }
 }

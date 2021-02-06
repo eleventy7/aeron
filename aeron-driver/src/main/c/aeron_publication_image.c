@@ -76,46 +76,47 @@ int aeron_publication_image_create(
     bool treat_as_multicast,
     aeron_system_counters_t *system_counters)
 {
-    char path[AERON_MAX_PATH];
-    int path_length = aeron_publication_image_location(path, sizeof(path), context->aeron_dir, correlation_id);
-
     aeron_publication_image_t *_image = NULL;
-    const uint64_t usable_fs_space = context->usable_fs_space_func(context->aeron_dir);
     const uint64_t log_length = aeron_logbuffer_compute_log_length(
         (uint64_t)term_buffer_length, context->file_page_size);
-    int64_t now_ns = aeron_clock_cached_nano_time(context->cached_clock);
 
     *image = NULL;
 
-    if (usable_fs_space < log_length)
+    if (context->perform_storage_checks && context->usable_fs_space_func(context->aeron_dir) < log_length)
     {
-        aeron_set_err(
+        AERON_SET_ERR(
             ENOSPC,
-            "Insufficient usable storage for new log of length=%" PRId64 " in %s", log_length, context->aeron_dir);
+            "Insufficient usable storage for new log of length=%" PRId64 " in %s",
+            log_length,
+            context->aeron_dir);
         return -1;
     }
 
     if (aeron_alloc((void **)&_image, sizeof(aeron_publication_image_t)) < 0)
     {
-        aeron_set_err(ENOMEM, "%s", "Could not allocate publication image");
+        AERON_APPEND_ERR("%s", "Could not allocate publication image");
         return -1;
     }
 
+    char path[AERON_MAX_PATH];
+    int path_length = aeron_publication_image_location(path, sizeof(path), context->aeron_dir, correlation_id);
     _image->log_file_name = NULL;
     if (aeron_alloc((void **)(&_image->log_file_name), (size_t)path_length + 1) < 0)
     {
         aeron_free(_image);
-        aeron_set_err(ENOMEM, "%s", "Could not allocate publication image log_file_name");
+        AERON_APPEND_ERR("%s", "Could not allocate publication image log_file_name");
         return -1;
     }
 
     if (aeron_loss_detector_init(
         &_image->loss_detector,
         treat_as_multicast ? &context->multicast_delay_feedback_generator : &context->unicast_delay_feedback_generator,
-        aeron_publication_image_on_gap_detected, _image) < 0)
+        aeron_publication_image_on_gap_detected,
+        _image) < 0)
     {
+        aeron_free(_image->log_file_name);
         aeron_free(_image);
-        aeron_set_err(ENOMEM, "%s", "Could not init publication image loss detector");
+        AERON_APPEND_ERR("%s", "Could not init publication image loss detector");
         return -1;
     }
 
@@ -124,7 +125,7 @@ int aeron_publication_image_create(
     {
         aeron_free(_image->log_file_name);
         aeron_free(_image);
-        aeron_set_err(aeron_errcode(), "error mapping network raw log %s: %s", path, aeron_errmsg());
+        AERON_APPEND_ERR("error mapping network raw log: %s", path);
         return -1;
     }
     _image->raw_log_close_func = context->raw_log_close_func;
@@ -136,6 +137,7 @@ int aeron_publication_image_create(
 
     if (aeron_publication_image_add_destination(_image, destination) < 0)
     {
+        // TODO: add missing clean up.
         return -1;
     }
     if (!destination->has_control_addr)
@@ -208,6 +210,7 @@ int aeron_publication_image_create(
 
     const int64_t initial_position = aeron_logbuffer_compute_position(
         active_term_id, initial_term_offset, _image->position_bits_to_shift, initial_term_id);
+    int64_t now_ns = aeron_clock_cached_nano_time(context->cached_clock);
 
     _image->begin_loss_change = -1;
     _image->end_loss_change = -1;
@@ -717,7 +720,7 @@ int aeron_publication_image_add_destination(aeron_publication_image_t *image, ae
 
     if (capacity_result < 0)
     {
-        aeron_set_err_from_last_err_code("%s:%d - %s", __FILE__, __LINE__, aeron_errmsg());
+        AERON_APPEND_ERR("%s", "Failed to ensure space for image->connections");
         return -1;
     }
 

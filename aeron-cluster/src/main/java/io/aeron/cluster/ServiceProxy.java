@@ -19,6 +19,7 @@ import io.aeron.Publication;
 import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
 import io.aeron.cluster.service.Cluster;
+import io.aeron.exceptions.AeronException;
 import io.aeron.logbuffer.BufferClaim;
 import org.agrona.*;
 
@@ -60,11 +61,12 @@ final class ServiceProxy implements AutoCloseable
     {
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + JoinLogEncoder.BLOCK_LENGTH +
             JoinLogEncoder.logChannelHeaderLength() + channel.length();
+        long result;
 
         int attempts = SEND_ATTEMPTS;
         do
         {
-            final long result = publication.tryClaim(length, bufferClaim);
+            result = publication.tryClaim(length, bufferClaim);
             if (result > 0)
             {
                 joinLogEncoder
@@ -92,7 +94,7 @@ final class ServiceProxy implements AutoCloseable
         }
         while (--attempts > 0);
 
-        throw new ClusterException("failed to send join log request");
+        throw new ClusterException("failed to send join log request: result=" + result);
     }
 
     void clusterMembersResponse(
@@ -200,34 +202,38 @@ final class ServiceProxy implements AutoCloseable
         throw new ClusterException("failed to send cluster members extended response");
     }
 
-    void terminationPosition(final long logPosition)
+    void terminationPosition(final long logPosition, final ErrorHandler errorHandler)
     {
-        final int length = MessageHeaderDecoder.ENCODED_LENGTH + ServiceTerminationPositionEncoder.BLOCK_LENGTH;
-
-        int attempts = SEND_ATTEMPTS;
-        do
+        if (!publication.isClosed())
         {
-            final long result = publication.tryClaim(length, bufferClaim);
-            if (result > 0)
+            final int length = MessageHeaderDecoder.ENCODED_LENGTH + ServiceTerminationPositionEncoder.BLOCK_LENGTH;
+            long result;
+
+            int attempts = SEND_ATTEMPTS;
+            do
             {
-                serviceTerminationPositionEncoder
-                    .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
-                    .logPosition(logPosition);
+                result = publication.tryClaim(length, bufferClaim);
+                if (result > 0)
+                {
+                    serviceTerminationPositionEncoder
+                        .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
+                        .logPosition(logPosition);
 
-                bufferClaim.commit();
+                    bufferClaim.commit();
 
-                return;
+                    return;
+                }
+
+                if (Publication.BACK_PRESSURED == result)
+                {
+                    Thread.yield();
+                }
             }
+            while (--attempts > 0);
 
-            checkResult(result);
-            if (Publication.BACK_PRESSURED == result)
-            {
-                Thread.yield();
-            }
+            errorHandler.onError(new ClusterException(
+                "failed to send service termination position: result=" + result, AeronException.Category.WARN));
         }
-        while (--attempts > 0);
-
-        throw new ClusterException("failed to send service termination position");
     }
 
     private static void checkResult(final long result)

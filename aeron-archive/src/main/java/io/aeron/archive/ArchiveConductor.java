@@ -69,6 +69,14 @@ abstract class ArchiveConductor
     private static final EnumSet<StandardOpenOption> FILE_OPTIONS = EnumSet.of(READ, WRITE);
     private static final FileAttribute<?>[] NO_ATTRIBUTES = new FileAttribute[0];
 
+    private final long closeHandlerRegistrationId;
+    private final long unavailableCounterHandlerRegistrationId;
+    private final long connectTimeoutMs;
+    private long nextSessionId = ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE);
+    private long markFileUpdateDeadlineMs = 0;
+    private int replayId = 1;
+    private volatile boolean isAbort;
+
     private final RecordingSummary recordingSummary = new RecordingSummary();
     private final ControlRequestDecoders decoders = new ControlRequestDecoders();
     private final ArrayDeque<Runnable> taskQueue = new ArrayDeque<>();
@@ -88,7 +96,6 @@ abstract class ArchiveConductor
     private final EpochClock epochClock;
     private final CachedEpochClock cachedEpochClock = new CachedEpochClock();
     private final File archiveDir;
-    private final FileChannel archiveDirChannel;
     private final Subscription controlSubscription;
     private final Subscription localControlSubscription;
     private final Catalog catalog;
@@ -96,16 +103,6 @@ abstract class ArchiveConductor
     private final RecordingEventsProxy recordingEventsProxy;
     private final Authenticator authenticator;
     private final ControlSessionProxy controlSessionProxy;
-    private final long closeHandlerRegistrationId;
-    private final long unavailableCounterHandlerRegistrationId;
-    private final long connectTimeoutMs;
-    private long timeOfLastMarkFileUpdateMs;
-    private long nextSessionId = ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE);
-    private final int maxConcurrentRecordings;
-    private final int maxConcurrentReplays;
-    private int replayId = 1;
-    private volatile boolean isAbort;
-
     final Archive.Context ctx;
     SessionWorker<ReplaySession> replayer;
     SessionWorker<RecordingSession> recorder;
@@ -121,9 +118,6 @@ abstract class ArchiveConductor
         driverAgentInvoker = ctx.mediaDriverAgentInvoker();
         epochClock = ctx.epochClock();
         archiveDir = ctx.archiveDir();
-        archiveDirChannel = ctx.archiveDirChannel();
-        maxConcurrentRecordings = ctx.maxConcurrentRecordings();
-        maxConcurrentReplays = ctx.maxConcurrentReplays();
         connectTimeoutMs = TimeUnit.NANOSECONDS.toMillis(ctx.connectTimeoutNs());
 
         unavailableCounterHandlerRegistrationId = aeron.addUnavailableCounterHandler(this);
@@ -262,10 +256,10 @@ abstract class ArchiveConductor
             cachedEpochClock.update(nowMs);
             workCount += invokeAeronInvoker();
 
-            if (nowMs >= (timeOfLastMarkFileUpdateMs + MARK_FILE_UPDATE_INTERVAL_MS))
+            if (nowMs >= markFileUpdateDeadlineMs)
             {
                 markFile.updateActivityTimestamp(nowMs);
-                timeOfLastMarkFileUpdateMs = nowMs;
+                markFileUpdateDeadlineMs = nowMs + MARK_FILE_UPDATE_INTERVAL_MS;
             }
         }
 
@@ -367,10 +361,15 @@ abstract class ArchiveConductor
         final String originalChannel,
         final ControlSession controlSession)
     {
-        if (recordingSessionByIdMap.size() >= maxConcurrentRecordings)
+        if (recordingSessionByIdMap.size() >= ctx.maxConcurrentRecordings())
         {
-            final String msg = "max concurrent recordings reached " + maxConcurrentRecordings;
+            final String msg = "max concurrent recordings reached " + ctx.maxConcurrentRecordings();
             controlSession.sendErrorResponse(correlationId, MAX_RECORDINGS, msg, controlResponseProxy);
+            return;
+        }
+
+        if (isLowStorageSpace(correlationId, controlSession))
+        {
             return;
         }
 
@@ -575,9 +574,9 @@ abstract class ArchiveConductor
         final String replayChannel,
         final ControlSession controlSession)
     {
-        if (replaySessionByIdMap.size() >= maxConcurrentReplays)
+        if (replaySessionByIdMap.size() >= ctx.maxConcurrentReplays())
         {
-            final String msg = "max concurrent replays reached " + maxConcurrentReplays;
+            final String msg = "max concurrent replays reached " + ctx.maxConcurrentReplays();
             controlSession.sendErrorResponse(correlationId, MAX_REPLAYS, msg, controlResponseProxy);
             return;
         }
@@ -638,9 +637,9 @@ abstract class ArchiveConductor
         final String replayChannel,
         final ControlSession controlSession)
     {
-        if (replaySessionByIdMap.size() >= maxConcurrentReplays)
+        if (replaySessionByIdMap.size() >= ctx.maxConcurrentReplays())
         {
-            final String msg = "max concurrent replays reached " + maxConcurrentReplays;
+            final String msg = "max concurrent replays reached " + ctx.maxConcurrentReplays();
             controlSession.sendErrorResponse(correlationId, MAX_REPLAYS, msg, controlResponseProxy);
             return;
         }
@@ -728,9 +727,9 @@ abstract class ArchiveConductor
         final String originalChannel,
         final ControlSession controlSession)
     {
-        if (recordingSessionByIdMap.size() >= maxConcurrentRecordings)
+        if (recordingSessionByIdMap.size() >= ctx.maxConcurrentRecordings())
         {
-            final String msg = "max concurrent recordings reached at " + maxConcurrentRecordings;
+            final String msg = "max concurrent recordings reached at " + ctx.maxConcurrentRecordings();
             controlSession.sendErrorResponse(correlationId, MAX_RECORDINGS, msg, controlResponseProxy);
             return null;
         }
@@ -755,6 +754,11 @@ abstract class ArchiveConductor
         {
             final String msg = "cannot extend active recording " + recordingId;
             controlSession.sendErrorResponse(correlationId, ACTIVE_RECORDING, msg, controlResponseProxy);
+            return null;
+        }
+
+        if (isLowStorageSpace(correlationId, controlSession))
+        {
             return null;
         }
 
@@ -980,6 +984,7 @@ abstract class ArchiveConductor
 
             catalog.recordingStopped(recordingId, position, epochClock.time());
 
+            session.sendPendingError(controlResponseProxy);
             session.controlSession().attemptSignal(
                 session.correlationId(),
                 recordingId,
@@ -1400,8 +1405,7 @@ abstract class ArchiveConductor
                     throw new IllegalArgumentException("invalid session id tag value: " + tag);
                 }
 
-                //noinspection UnnecessaryBoxing
-                builder.isSessionIdTagged(true).sessionId(Integer.valueOf((int)tag));
+                builder.isSessionIdTagged(true).sessionId((int)tag);
             }
             else
             {
@@ -1508,11 +1512,8 @@ abstract class ArchiveConductor
             recordingEventsProxy,
             image,
             position,
-            archiveDirChannel,
             ctx,
             controlSession,
-            ctx.recordChecksumBuffer(),
-            ctx.recordChecksum(),
             autoStop);
 
         recordingSessionByIdMap.put(recordingId, session);
@@ -1567,11 +1568,8 @@ abstract class ArchiveConductor
                 recordingEventsProxy,
                 image,
                 position,
-                archiveDirChannel,
                 ctx,
                 controlSession,
-                ctx.recordChecksumBuffer(),
-                ctx.recordChecksum(),
                 autoStop);
 
             recordingSessionByIdMap.put(recordingId, session);
@@ -1954,5 +1952,27 @@ abstract class ArchiveConductor
         }
 
         return counter;
+    }
+
+    private boolean isLowStorageSpace(final long correlationId, final ControlSession controlSession)
+    {
+        try
+        {
+            final long usableSpace = ctx.archiveFileStore().getUsableSpace();
+            final long threshold = ctx.lowStorageSpaceThreshold();
+
+            if (usableSpace <= threshold)
+            {
+                final String msg = "low storage threshold=" + threshold + " <= usableSpace=" + usableSpace;
+                controlSession.sendErrorResponse(correlationId, STORAGE_SPACE, msg, controlResponseProxy);
+                return true;
+            }
+        }
+        catch (final IOException ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+
+        return false;
     }
 }

@@ -27,8 +27,7 @@ import io.aeron.test.Tests;
 import io.aeron.test.TopologyTest;
 import io.aeron.test.launcher.FileResolveUtil;
 import io.aeron.test.launcher.RemoteLaunchClient;
-import org.agrona.IoUtil;
-import org.agrona.MutableDirectBuffer;
+import org.agrona.*;
 import org.agrona.collections.MutableReference;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,6 +47,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -57,17 +57,14 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 @TopologyTest
 public class ClusterNetworkTopologyTest
 {
     private static final int REMOTE_LAUNCH_PORT = 11112;
-    private static final String NODE_0_HOST = "10.42.0.10";
-    private static final String NODE_1_HOST = "10.42.0.11";
-    private static final String NODE_2_HOST = "10.42.0.12";
-    private static final String INGRESS_ENDPOINTS = BasicAuctionClusterClient.ingressEndpoints(
-        Arrays.asList(NODE_0_HOST, NODE_1_HOST, NODE_2_HOST));
+    private static final List<String> HOSTNAMES = Arrays.asList("10.42.0.10", "10.42.0.11", "10.42.0.12");
+    private static final List<String> INTERNAL_HOSTNAMES = Arrays.asList("10.42.1.10", "10.42.1.11", "10.42.1.12");
 
     @BeforeEach
     void setUp()
@@ -77,7 +74,7 @@ public class ClusterNetworkTopologyTest
             {
                 final List<VirtualMachineDescriptor> list = VirtualMachine.list();
                 final List<VirtualMachineDescriptor> echoServices = list.stream()
-                    .filter(vm -> EchoServiceNode.class.getName().equals(vm.displayName()))
+                    .filter((vm) -> EchoServiceNode.class.getName().equals(vm.displayName()))
                     .collect(Collectors.toList());
 
                 if (!echoServices.isEmpty())
@@ -88,8 +85,7 @@ public class ClusterNetworkTopologyTest
 
                 return echoServices.isEmpty();
             },
-            SECONDS.toNanos(5)
-        );
+            SECONDS.toNanos(5));
 
         final File scriptDir = FileResolveUtil.resolveClusterScriptDir();
         IoUtil.delete(new File(scriptDir, "node0"), true);
@@ -98,38 +94,57 @@ public class ClusterNetworkTopologyTest
     }
 
     @Test
-    void shouldGetNetworkInformationFromAgentNodes() throws IOException
+    void shouldGetNetworkInformationFromAgentNodes()
     {
-        RemoteLaunchClient.connect(NODE_0_HOST, REMOTE_LAUNCH_PORT).executeBlocking(System.out, "/usr/sbin/ip", "a");
-        RemoteLaunchClient.connect(NODE_1_HOST, REMOTE_LAUNCH_PORT).executeBlocking(System.out, "/usr/sbin/ip", "a");
-        RemoteLaunchClient.connect(NODE_2_HOST, REMOTE_LAUNCH_PORT).executeBlocking(System.out, "/usr/sbin/ip", "a");
+        assertTimeoutPreemptively(
+            Duration.ofMillis(10_000),
+            () ->
+            {
+                RemoteLaunchClient.connect(HOSTNAMES.get(0), REMOTE_LAUNCH_PORT)
+                    .executeBlocking(System.out, "/usr/sbin/ip", "a");
+                RemoteLaunchClient.connect(HOSTNAMES.get(1), REMOTE_LAUNCH_PORT)
+                    .executeBlocking(System.out, "/usr/sbin/ip", "a");
+                RemoteLaunchClient.connect(HOSTNAMES.get(2), REMOTE_LAUNCH_PORT)
+                    .executeBlocking(System.out, "/usr/sbin/ip", "a");
+            });
     }
 
     private static Stream<Arguments> provideTopologyConfigurations()
     {
         return Stream.of(
-            Arguments.of("aeron:udp", INGRESS_ENDPOINTS, null),
-            Arguments.of("aeron:udp?endpoint=239.20.90.11:9152|interface=10.42.0.0/24", null, null),
-            Arguments.of("aeron:udp", INGRESS_ENDPOINTS, "aeron:udp?endpoint=239.20.90.13:9152|interface=10.42.0.0/24")
-        );
+            Arguments.of(
+                HOSTNAMES, null, "aeron:udp", null),
+            Arguments.of(
+                HOSTNAMES, null, "aeron:udp?endpoint=239.20.90.11:9152|interface=10.42.0.0/24", null, null),
+            Arguments.of(
+                HOSTNAMES, null, "aeron:udp", "aeron:udp?endpoint=239.20.90.13:9152|interface=10.42.0.0/24"),
+            Arguments.of(
+                HOSTNAMES, null, "aeron:udp", "aeron:udp?endpoint=239.20.90.13:9152|interface=10.42.1.0/24"),
+            Arguments.of(
+                HOSTNAMES, INTERNAL_HOSTNAMES, "aeron:udp", null));
     }
 
     @ParameterizedTest
     @MethodSource("provideTopologyConfigurations")
     void shouldGetEchoFromCluster(
+        final List<String> hostnames,
+        final List<String> internalHostnames,
         final String ingressChannel,
-        final String ingressEndpoints,
         final String logChannel) throws Exception
     {
+        assertNotNull(hostnames);
+        assertEquals(3, hostnames.size());
+
         try (
-            RemoteLaunchClient remote0 = RemoteLaunchClient.connect(NODE_0_HOST, REMOTE_LAUNCH_PORT);
-            RemoteLaunchClient remote1 = RemoteLaunchClient.connect(NODE_1_HOST, REMOTE_LAUNCH_PORT);
-            RemoteLaunchClient remote2 = RemoteLaunchClient.connect(NODE_2_HOST, REMOTE_LAUNCH_PORT))
+            RemoteLaunchClient remote0 = RemoteLaunchClient.connect(hostnames.get(0), REMOTE_LAUNCH_PORT);
+            RemoteLaunchClient remote1 = RemoteLaunchClient.connect(hostnames.get(1), REMOTE_LAUNCH_PORT);
+            RemoteLaunchClient remote2 = RemoteLaunchClient.connect(hostnames.get(2), REMOTE_LAUNCH_PORT))
         {
-            final String hostnames = NODE_0_HOST + "," + NODE_1_HOST + "," + NODE_2_HOST;
-            final String[] command0 = deriveCommand(hostnames, 0, ingressChannel, logChannel);
-            final String[] command1 = deriveCommand(hostnames, 1, ingressChannel, logChannel);
-            final String[] command2 = deriveCommand(hostnames, 2, ingressChannel, logChannel);
+            final String[] command0 = deriveCommand(0, hostnames, internalHostnames, ingressChannel, logChannel);
+            final String[] command1 = deriveCommand(1, hostnames, internalHostnames, ingressChannel, logChannel);
+            final String[] command2 = deriveCommand(2, hostnames, internalHostnames, ingressChannel, logChannel);
+            final String ingressEndpoints = ingressChannel.contains("endpoint") ?
+                null : BasicAuctionClusterClient.ingressEndpoints(hostnames);
 
             final SocketChannel execute0 = remote0.execute(false, command0);
             final SocketChannel execute1 = remote1.execute(false, command1);
@@ -161,12 +176,13 @@ public class ClusterNetworkTopologyTest
             final int length = messageBuffer.putStringAscii(0, message);
             final MutableReference<String> egressResponse = new MutableReference<>();
 
-            final EgressListener egressListener = (clusterSessionId, timestamp, buffer, offset, length1, header) ->
-            {
-                final String stringAscii = buffer.getStringAscii(offset);
-                System.out.println("Response: " + stringAscii);
-                egressResponse.set(stringAscii);
-            };
+            final EgressListener egressListener =
+                (clusterSessionId, timestamp, buffer, offset, length1, header) ->
+                {
+                    final String stringAscii = buffer.getStringAscii(offset);
+                    System.out.println("Response: " + stringAscii);
+                    egressResponse.set(stringAscii);
+                };
 
             try (
                 MediaDriver mediaDriver = MediaDriver.launchEmbedded(new MediaDriver.Context()
@@ -188,8 +204,7 @@ public class ClusterNetworkTopologyTest
                         pollSelector(selector);
                         return 0 < position;
                     },
-                    SECONDS.toNanos(5)
-                );
+                    SECONDS.toNanos(5));
 
                 Tests.await(
                     () ->
@@ -198,8 +213,7 @@ public class ClusterNetworkTopologyTest
                         pollSelector(selector);
                         return message.equals(egressResponse.get());
                     },
-                    SECONDS.toNanos(5)
-                );
+                    SECONDS.toNanos(5));
             }
         }
     }
@@ -327,15 +341,16 @@ public class ClusterNetworkTopologyTest
             }
             selectionKeys.clear();
         }
-        catch (final IOException e)
+        catch (final IOException ex)
         {
-            throw new RuntimeException(e);
+            throw new RuntimeException(ex);
         }
     }
 
     private String[] deriveCommand(
-        final String hostnames,
         final int nodeId,
+        final List<String> hostnames,
+        final List<String> internalHostnames,
         final String ingressChannel,
         final String logChannel)
     {
@@ -350,8 +365,11 @@ public class ClusterNetworkTopologyTest
 
         command.add("-cp");
         command.add(FileResolveUtil.resolveAeronAllJar().getAbsolutePath());
+        command.add("-javaagent:" + FileResolveUtil.resolveAeronAgentJar().getAbsolutePath());
+        command.add("-Djava.net.preferIPv4Stack=true");
         command.add("-Daeron.dir.delete.on.start=true");
-        command.add("-Daeron.print.configuration=true");
+        command.add("-Daeron.event.cluster.log=all");
+        command.add("-Daeron.driver.resolver.name=node" + nodeId);
 
         if (null != ingressChannel)
         {
@@ -363,7 +381,12 @@ public class ClusterNetworkTopologyTest
             command.add("-Daeron.cluster.log.channel=" + logChannel);
         }
 
-        command.add("-Daeron.cluster.tutorial.hostnames=" + hostnames);
+        command.add("-Daeron.cluster.tutorial.hostnames=" + String.join(",", hostnames));
+        if (null != internalHostnames && internalHostnames.size() == hostnames.size())
+        {
+            command.add("-Daeron.cluster.tutorial.hostnames.internal=" + String.join(",", hostnames));
+        }
+
         command.add("-Daeron.cluster.tutorial.nodeId=" + nodeId);
         command.add(EchoServiceNode.class.getName());
 
@@ -372,8 +395,11 @@ public class ClusterNetworkTopologyTest
 
     private static boolean isVersionAfterJdk8()
     {
-        String versionString = System.getProperty("java.specification.version");
-        versionString = versionString.startsWith("1.") ? versionString.substring(2) : versionString;
-        return Integer.parseInt(versionString) > 8;
+        final String str = System.getProperty("java.specification.version");
+        final int version = str.startsWith("1.") ?
+            AsciiEncoding.parseIntAscii(str, 2, str.length() - 2) :
+            AsciiEncoding.parseIntAscii(str, 0, str.length());
+
+        return version > 8;
     }
 }

@@ -21,20 +21,20 @@ import io.aeron.archive.ArchiveMarkFile;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.client.*;
+import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusterMarkFile;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import io.aeron.exceptions.TimeoutException;
 import io.aeron.logbuffer.Header;
 import io.aeron.test.SlowTest;
 import io.aeron.test.Tests;
 import io.aeron.test.cluster.ClusterTests;
 import io.aeron.test.cluster.StubClusteredService;
-import org.agrona.CloseHelper;
-import org.agrona.DirectBuffer;
-import org.agrona.ExpandableArrayBuffer;
+import org.agrona.*;
 import org.agrona.collections.LongHashSet;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.NoOpLock;
@@ -70,8 +70,8 @@ public class StartFromTruncatedRecordingLogTest
 
     private static final String CLUSTER_MEMBERS = clusterMembersString();
     private static final String LOG_CHANNEL = "aeron:udp?term-length=256k";
-    private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL = "aeron:ipc?term-length=64k";
-    private static final String ARCHIVE_CONTROL_RESPONSE_CHANNEL = "aeron:ipc?term-length=64k";
+    private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL = "aeron:udp?term-length=64k|endpoint=localhost:801";
+    private static final String LOCAL_ARCHIVE_CONTROL_CHANNEL = "aeron:ipc?term-length=64k";
 
     private final AtomicLong[] snapshotCounters = new AtomicLong[MEMBER_COUNT];
     private final Counter[] mockSnapshotCounters = new Counter[MEMBER_COUNT];
@@ -81,10 +81,44 @@ public class StartFromTruncatedRecordingLogTest
     private MediaDriver clientMediaDriver;
     private AeronCluster client;
 
-    private final MutableInteger responseCount = new MutableInteger();
-    private final EgressListener egressMessageListener =
-        (clusterSessionId, timestamp, buffer, offset, length, header) -> responseCount.value++;
     private final AtomicLong terminateCount = new AtomicLong();
+    private final MutableInteger responseCount = new MutableInteger();
+    private final EgressListener egressMessageListener = new EgressListener()
+    {
+        public void onMessage(
+            final long clusterSessionId,
+            final long timestamp,
+            final DirectBuffer buffer,
+            final int offset,
+            final int length,
+            final Header header)
+        {
+            responseCount.increment();
+        }
+
+        public void onSessionEvent(
+            final long correlationId,
+            final long clusterSessionId,
+            final long leadershipTermId,
+            final int leaderMemberId,
+            final EventCode code,
+            final String detail)
+        {
+            if (EventCode.ERROR == code)
+            {
+                throw new ClusterException(detail);
+            }
+            else if (EventCode.CLOSED == code)
+            {
+                final String msg = "session closed due to " + detail;
+
+                System.err.println("*** " + msg);
+                System.err.println(SystemUtil.threadDump());
+
+                throw new ClusterException(msg);
+            }
+        }
+    };
 
     @BeforeEach
     public void before()
@@ -147,40 +181,35 @@ public class StartFromTruncatedRecordingLogTest
 
     @Test
     @Timeout(30)
-    public void shouldBeAbleToStartClusterFromTruncatedRecordingLog() throws Exception
+    public void shouldBeAbleToStartClusterFromTruncatedRecordingLog() throws IOException
     {
-        stopAndStartClusterWithTruncationOfRecordingLog();
-        assertClusterIsFunctioningCorrectly();
+        restartClusterWithTruncatedRecordingLog();
+        assertClusterIsOperational();
 
-        stopAndStartClusterWithTruncationOfRecordingLog();
-        assertClusterIsFunctioningCorrectly();
+        restartClusterWithTruncatedRecordingLog();
+        assertClusterIsOperational();
 
-        stopAndStartClusterWithTruncationOfRecordingLog();
-        assertClusterIsFunctioningCorrectly();
+        restartClusterWithTruncatedRecordingLog();
+        assertClusterIsOperational();
 
         ClusterTests.failOnClusterError();
     }
 
-    private void stopAndStartClusterWithTruncationOfRecordingLog() throws Exception
+    private void restartClusterWithTruncatedRecordingLog() throws IOException
     {
-        final int leaderMemberId = awaitLeaderMemberId();
+        final int leaderMemberId = awaitLeader();
         final int followerMemberIdA = (leaderMemberId + 1) >= MEMBER_COUNT ? 0 : (leaderMemberId + 1);
         final int followerMemberIdB = (followerMemberIdA + 1) >= MEMBER_COUNT ? 0 : (followerMemberIdA + 1);
 
         takeSnapshot(leaderMemberId);
         awaitSnapshotCount(1);
-
         awaitNeutralControlToggle(leaderMemberId);
-        awaitConsensusModulesActive();
 
         terminateCount.set(0);
         shutdown(leaderMemberId);
         awaitSnapshotCount(2);
         Tests.awaitValue(terminateCount, MEMBER_COUNT);
-
-        stopNode(leaderMemberId);
-        stopNode(followerMemberIdA);
-        stopNode(followerMemberIdB);
+        closeNodes();
 
         truncateRecordingLogAndDeleteMarkFiles(leaderMemberId);
         truncateRecordingLogAndDeleteMarkFiles(followerMemberIdA);
@@ -191,7 +220,7 @@ public class StartFromTruncatedRecordingLogTest
         startNode(followerMemberIdB, false);
     }
 
-    private int awaitLeaderMemberId()
+    private int awaitLeader()
     {
         int leaderMemberId;
         while (NULL_VALUE == (leaderMemberId = findLeaderId()))
@@ -202,9 +231,9 @@ public class StartFromTruncatedRecordingLogTest
         return leaderMemberId;
     }
 
-    private void assertClusterIsFunctioningCorrectly()
+    private void assertClusterIsOperational()
     {
-        awaitLeaderMemberId();
+        awaitLeader();
         connectClient();
 
         final ExpandableArrayBuffer msgBuffer = new ExpandableArrayBuffer();
@@ -213,8 +242,6 @@ public class StartFromTruncatedRecordingLogTest
         final int initialCount = responseCount.get();
         sendMessages(msgBuffer);
         awaitResponses(MESSAGE_COUNT + initialCount);
-
-        closeClient();
     }
 
     private void truncateRecordingLogAndDeleteMarkFiles(final int index) throws IOException
@@ -263,55 +290,26 @@ public class StartFromTruncatedRecordingLogTest
 
             try (Stream<Path> segments = Files.list(archiveDataDir.toPath()).filter(filterPredicate))
             {
-                segments.filter(
-                    (p) ->
-                    {
-                        final String fileName = p.getFileName().toString();
-                        final long recording = Long.parseLong(fileName.split("-")[0]);
+                segments
+                    .filter(
+                        (p) ->
+                        {
+                            final String fileName = p.getFileName().toString();
+                            final long recordingId = Long.parseLong(fileName.split("-")[0]);
 
-                        return !recordingIds.contains(recording);
-                    })
-                    .map(Path::toFile).forEach(this::deleteFile);
+                            return !recordingIds.contains(recordingId);
+                        })
+                    .map(Path::toFile).forEach(StartFromTruncatedRecordingLogTest::deleteFile);
             }
 
             assertTrue(copiedRecordingLog.entries().size() <= 3);
         }
     }
 
-    private String baseDirName(final int index)
-    {
-        return CommonContext.getAeronDirectoryName() + "-" + index;
-    }
-
-    private String aeronDirName(final int index)
-    {
-        return CommonContext.getAeronDirectoryName() + "-" + index + "-driver";
-    }
-
-    private void deleteFile(final File file)
-    {
-        if (file.exists())
-        {
-            try
-            {
-                Files.delete(file.toPath());
-            }
-            catch (final IOException e)
-            {
-                fail("failed to delete file: " + file);
-            }
-        }
-
-        if (file.exists())
-        {
-            fail("failed to delete file: " + file);
-        }
-    }
-
     private void appendServiceSnapshot(
-        final RecordingLog existingRecordingLog, final RecordingLog newRecordingLog, final int serviceId)
+        final RecordingLog oldRecordingLog, final RecordingLog newRecordingLog, final int serviceId)
     {
-        final RecordingLog.Entry snapshot = existingRecordingLog.getLatestSnapshot(serviceId);
+        final RecordingLog.Entry snapshot = oldRecordingLog.getLatestSnapshot(serviceId);
         assertNotNull(snapshot);
 
         newRecordingLog.appendSnapshot(
@@ -330,10 +328,9 @@ public class StartFromTruncatedRecordingLogTest
 
         final AeronArchive.Context archiveCtx = new AeronArchive.Context()
             .lock(NoOpLock.INSTANCE)
-            .controlRequestChannel(ARCHIVE_CONTROL_REQUEST_CHANNEL)
-            .controlRequestStreamId(100 + index)
-            .controlResponseChannel(ARCHIVE_CONTROL_RESPONSE_CHANNEL)
-            .controlResponseStreamId(110 + index)
+            .controlRequestChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
+            .controlRequestStreamId(AeronArchive.Configuration.localControlStreamId())
+            .controlResponseChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
             .aeronDirectoryName(baseDirName);
 
         clusteredMediaDrivers[index] = ClusteredMediaDriver.launch(
@@ -348,13 +345,12 @@ public class StartFromTruncatedRecordingLogTest
             new Archive.Context()
                 .catalogCapacity(CATALOG_CAPACITY)
                 .archiveDir(new File(baseDirName, "archive"))
-                .controlChannel(archiveCtx.controlRequestChannel())
-                .controlStreamId(archiveCtx.controlRequestStreamId())
-                .localControlChannel(ARCHIVE_CONTROL_RESPONSE_CHANNEL)
+                .controlChannel(ARCHIVE_CONTROL_REQUEST_CHANNEL + index)
+                .localControlChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
                 .localControlStreamId(archiveCtx.controlRequestStreamId())
                 .recordingEventsEnabled(false)
                 .threadingMode(ArchiveThreadingMode.SHARED)
-                .errorHandler(Tests::onError)
+                .errorHandler(ClusterTests.errorHandler(index))
                 .deleteArchiveOnStart(cleanStart),
             new ConsensusModule.Context()
                 .errorHandler(ClusterTests.errorHandler(index))
@@ -378,32 +374,36 @@ public class StartFromTruncatedRecordingLogTest
                 .errorHandler(ClusterTests.errorHandler(index)));
     }
 
-    private void stopNode(final int index)
+    private void closeNodes()
     {
-        containers[index].close();
-        containers[index] = null;
-        clusteredMediaDrivers[index].close();
-        clusteredMediaDrivers[index] = null;
+        for (int i = 0; i < MEMBER_COUNT; i++)
+        {
+            containers[i].close();
+            containers[i] = null;
+            clusteredMediaDrivers[i].close();
+            clusteredMediaDrivers[i] = null;
+        }
     }
 
     private void connectClient()
     {
-        closeClient();
+        final AeronCluster.Context ctx = new AeronCluster.Context()
+            .egressListener(egressMessageListener)
+            .ingressChannel("aeron:udp?term-length=64k")
+            .egressChannel("aeron:udp?term-length=64k|endpoint=localhost:0")
+            .ingressEndpoints("0=localhost:20110,1=localhost:20111,2=localhost:20112");
 
-        client = AeronCluster.connect(
-            new AeronCluster.Context()
-                .egressListener(egressMessageListener)
-                .ingressChannel("aeron:udp?term-length=64k")
-                .egressChannel("aeron:udp?term-length=64k|endpoint=localhost:0")
-                .ingressEndpoints("0=localhost:20110,1=localhost:20111,2=localhost:20112"));
-    }
-
-    private void closeClient()
-    {
-        if (null != client)
+        try
         {
-            client.close();
-            client = null;
+            CloseHelper.close(client);
+            client = AeronCluster.connect(ctx.clone());
+        }
+        catch (final TimeoutException ex)
+        {
+            System.out.println("Warning: " + ex);
+
+            CloseHelper.close(client);
+            client = AeronCluster.connect(ctx);
         }
     }
 
@@ -411,8 +411,18 @@ public class StartFromTruncatedRecordingLogTest
     {
         for (int i = 0; i < MESSAGE_COUNT; i++)
         {
-            while (client.offer(msgBuffer, 0, ClusterTests.HELLO_WORLD_MSG.length()) < 0)
+            while (true)
             {
+                final long result = client.offer(msgBuffer, 0, ClusterTests.HELLO_WORLD_MSG.length());
+                if (result > 0)
+                {
+                    break;
+                }
+                else if (Publication.NOT_CONNECTED == result || Publication.CLOSED == result)
+                {
+                    fail("publication in unexpected state: " + result);
+                }
+
                 Tests.yield();
                 client.pollEgress();
             }
@@ -474,7 +484,22 @@ public class StartFromTruncatedRecordingLogTest
         return builder.toString();
     }
 
-    static class EchoService extends StubClusteredService
+    private static String baseDirName(final int index)
+    {
+        return CommonContext.getAeronDirectoryName() + "-" + index;
+    }
+
+    private static String aeronDirName(final int index)
+    {
+        return CommonContext.getAeronDirectoryName() + "-" + index + "-driver";
+    }
+
+    private static void deleteFile(final File file)
+    {
+        IoUtil.delete(file, false);
+    }
+
+    static final class EchoService extends StubClusteredService
     {
         private volatile int messageCount;
 
@@ -504,8 +529,6 @@ public class StartFromTruncatedRecordingLogTest
 
     private int findLeaderId()
     {
-        int leaderMemberId = NULL_VALUE;
-
         for (int i = 0; i < MEMBER_COUNT; i++)
         {
             final ConsensusModule.Context context = clusteredMediaDrivers[i].consensusModule().context();
@@ -514,11 +537,11 @@ public class StartFromTruncatedRecordingLogTest
 
             if (Cluster.Role.LEADER == role && ElectionState.CLOSED == ElectionState.get(electionStateCounter))
             {
-                leaderMemberId = context.clusterMemberId();
+                return context.clusterMemberId();
             }
         }
 
-        return leaderMemberId;
+        return NULL_VALUE;
     }
 
     private void takeSnapshot(final int index)
@@ -567,20 +590,6 @@ public class StartFromTruncatedRecordingLogTest
             }
 
             Tests.yield();
-        }
-    }
-
-    private void awaitConsensusModulesActive()
-    {
-        for (int i = 0; i < MEMBER_COUNT; i++)
-        {
-            final ConsensusModule.Context context = clusteredMediaDrivers[i].consensusModule().context();
-            final Counter moduleStateCounter = context.moduleStateCounter();
-
-            while (ConsensusModule.State.ACTIVE != ConsensusModule.State.get(moduleStateCounter))
-            {
-                Tests.yield();
-            }
         }
     }
 

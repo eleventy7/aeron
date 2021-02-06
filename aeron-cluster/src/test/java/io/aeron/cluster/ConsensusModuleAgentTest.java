@@ -17,9 +17,12 @@ package io.aeron.cluster;
 
 import io.aeron.*;
 import io.aeron.archive.client.AeronArchive;
-import io.aeron.cluster.codecs.*;
+import io.aeron.cluster.codecs.CloseReason;
+import io.aeron.cluster.codecs.ClusterAction;
+import io.aeron.cluster.codecs.EventCode;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusterMarkFile;
+import io.aeron.cluster.service.ClusterTerminationException;
 import io.aeron.security.DefaultAuthenticatorSupplier;
 import io.aeron.status.ReadableCounter;
 import io.aeron.test.Tests;
@@ -33,16 +36,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
-
 import java.util.concurrent.TimeUnit;
 
 import static io.aeron.cluster.ClusterControl.ToggleState.*;
-import static io.aeron.cluster.ConsensusModule.Configuration.*;
+import static io.aeron.cluster.ConsensusModule.Configuration.SESSION_LIMIT_MSG;
 import static io.aeron.cluster.ConsensusModuleAgent.SLOW_TICK_INTERVAL_NS;
 import static io.aeron.cluster.client.AeronCluster.Configuration.PROTOCOL_SEMANTIC_VERSION;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.*;
 import static java.lang.Boolean.TRUE;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 public class ConsensusModuleAgentTest
 {
@@ -102,7 +104,7 @@ public class ConsensusModuleAgentTest
         final long correlationIdOne = 1L;
         agent.state(ConsensusModule.State.ACTIVE);
         agent.role(Cluster.Role.LEADER);
-        agent.appendPositionCounter(mock(ReadableCounter.class));
+        Tests.setField(agent, "appendPosition", mock(ReadableCounter.class));
         agent.onSessionConnect(correlationIdOne, 2, PROTOCOL_SEMANTIC_VERSION, RESPONSE_CHANNEL_ONE, new byte[0]);
 
         clock.update(17, TimeUnit.MILLISECONDS);
@@ -134,7 +136,7 @@ public class ConsensusModuleAgentTest
         final long correlationId = 1L;
         agent.state(ConsensusModule.State.ACTIVE);
         agent.role(Cluster.Role.LEADER);
-        agent.appendPositionCounter(mock(ReadableCounter.class));
+        Tests.setField(agent, "appendPosition", mock(ReadableCounter.class));
         agent.onSessionConnect(correlationId, 2, PROTOCOL_SEMANTIC_VERSION, RESPONSE_CHANNEL_ONE, new byte[0]);
 
         agent.doWork();
@@ -170,7 +172,7 @@ public class ConsensusModuleAgentTest
         final long correlationId = 1L;
         agent.state(ConsensusModule.State.ACTIVE);
         agent.role(Cluster.Role.LEADER);
-        agent.appendPositionCounter(mock(ReadableCounter.class));
+        Tests.setField(agent, "appendPosition", mock(ReadableCounter.class));
         agent.onSessionConnect(correlationId, 2, PROTOCOL_SEMANTIC_VERSION, RESPONSE_CHANNEL_ONE, new byte[0]);
 
         agent.doWork();
@@ -240,7 +242,7 @@ public class ConsensusModuleAgentTest
         ctx.epochClock(clock).clusterClock(clock);
 
         final ConsensusModuleAgent agent = new ConsensusModuleAgent(ctx);
-        agent.appendPositionCounter(mock(ReadableCounter.class));
+        Tests.setField(agent, "appendPosition", mock(ReadableCounter.class));
 
         assertEquals(ConsensusModule.State.INIT.code(), stateValue.get());
 
@@ -265,5 +267,39 @@ public class ConsensusModuleAgentTest
         final InOrder inOrder = Mockito.inOrder(mockLogPublisher);
         inOrder.verify(mockLogPublisher).appendClusterAction(anyLong(), anyLong(), eq(ClusterAction.SUSPEND));
         inOrder.verify(mockLogPublisher).appendClusterAction(anyLong(), anyLong(), eq(ClusterAction.RESUME));
+    }
+
+    @Test
+    public void shouldThrowClusterTerminationExceptionUponShutdown()
+    {
+        final TestClusterClock clock = new TestClusterClock(TimeUnit.MILLISECONDS);
+
+        final MutableLong stateValue = new MutableLong();
+        final Counter mockState = mock(Counter.class);
+        final Runnable terminationHook = mock(Runnable.class);
+        when(mockState.get()).thenAnswer((invocation) -> stateValue.value);
+        doAnswer(
+            (invocation) ->
+            {
+                stateValue.value = invocation.getArgument(0);
+                return null;
+            })
+            .when(mockState).set(anyLong());
+
+        final OutOfMemoryError hookException = new OutOfMemoryError("Hook exception!");
+        doThrow(hookException).when(terminationHook).run();
+
+        ctx.moduleStateCounter(mockState);
+        ctx.epochClock(clock).clusterClock(clock);
+        ctx.terminationHook(terminationHook);
+
+        final ConsensusModuleAgent agent = new ConsensusModuleAgent(ctx);
+        agent.state(ConsensusModule.State.QUITTING);
+
+        final ClusterTerminationException exception = assertThrows(ClusterTerminationException.class,
+            () -> agent.onServiceAck(1024, 100, 0, 55, 0));
+
+        assertEquals(1, exception.getSuppressed().length);
+        assertSame(exception.getSuppressed()[0], hookException);
     }
 }

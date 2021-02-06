@@ -203,7 +203,7 @@ public final class CTestMediaDriver implements TestMediaDriver
 
     private static void setLogging(final Map<String, String> environment)
     {
-        environment.put("AERON_EVENT_LOG", "all");
+        environment.put("AERON_EVENT_LOG", "admin");
 
         final String driverAgentPath = System.getProperty(DRIVER_AGENT_PATH_PROP_NAME);
         if (null == driverAgentPath)
@@ -232,7 +232,7 @@ public final class CTestMediaDriver implements TestMediaDriver
         else if (null != multicastFlowControlSupplier)
         {
             throw new RuntimeException("No equivalent C multicast flow control strategy for: " +
-                multicastFlowControlSupplier.getClass().getSimpleName());
+                multicastFlowControlSupplier.getClass().getName());
         }
 
         final FlowControlSupplier unicastFlowControlSupplier = context.unicastFlowControlSupplier();
@@ -244,7 +244,7 @@ public final class CTestMediaDriver implements TestMediaDriver
         else if (null != unicastFlowControlSupplier)
         {
             throw new RuntimeException("No equivalent C unicast flow control strategy for: " +
-                multicastFlowControlSupplier.getClass().getSimpleName());
+                multicastFlowControlSupplier.getClass().getName());
         }
     }
 

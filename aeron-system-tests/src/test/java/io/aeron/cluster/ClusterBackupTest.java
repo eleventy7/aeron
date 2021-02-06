@@ -42,7 +42,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(cluster.findLeader().service().cluster().logPosition());
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -73,7 +72,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -104,7 +102,6 @@ public class ClusterBackupTest
             final long logPosition = leader.service().cluster().logPosition();
 
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -138,7 +135,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -150,7 +146,7 @@ public class ClusterBackupTest
     }
 
     @Test
-    @Timeout(60)
+    @Timeout(30)
     public void shouldBackupClusterAfterCleanShutdown()
     {
         try (TestCluster cluster = TestCluster.startThreeNodeStaticCluster(NULL_VALUE))
@@ -168,7 +164,6 @@ public class ClusterBackupTest
             cluster.node(2).isTerminationExpected(true);
 
             cluster.shutdownCluster(leader);
-
             cluster.awaitNodeTerminations();
 
             assertTrue(cluster.node(0).service().wasSnapshotTaken());
@@ -216,7 +211,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -257,7 +251,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -315,7 +308,6 @@ public class ClusterBackupTest
             final long nextLogPosition = leader.service().cluster().logPosition();
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(nextLogPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -345,10 +337,8 @@ public class ClusterBackupTest
             final long logPosition = nextLeader.service().cluster().logPosition();
 
             cluster.startClusterBackupNode(true);
-
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();
@@ -380,7 +370,6 @@ public class ClusterBackupTest
             aeronCluster.sendKeepAlive();
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(logPosition);
-
             cluster.stopNode(leader);
 
             final TestNode nextLeader = cluster.awaitLeader();
@@ -393,7 +382,6 @@ public class ClusterBackupTest
 
             cluster.awaitBackupState(ClusterBackup.State.BACKING_UP);
             cluster.awaitBackupLiveLogPosition(nextLogPosition);
-
             cluster.stopAllNodes();
 
             final TestNode node = cluster.startStaticNodeFromBackup();

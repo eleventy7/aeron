@@ -138,6 +138,8 @@ class ClientConductor implements Agent
                     aeron.internalClose();
                 }
 
+                final boolean isTerminating = this.isTerminating;
+                this.isTerminating = true;
                 forceCloseResources();
                 notifyCloseHandlers();
 
@@ -808,7 +810,15 @@ class ClientConductor implements Agent
 
     boolean removeAvailableCounterHandler(final long registrationId)
     {
-        return availableCounterHandlerById.remove(registrationId) != null;
+        clientLock.lock();
+        try
+        {
+            return availableCounterHandlerById.remove(registrationId) != null;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
     }
 
     boolean removeAvailableCounterHandler(final AvailableCounterHandler handler)
@@ -862,7 +872,15 @@ class ClientConductor implements Agent
 
     boolean removeUnavailableCounterHandler(final long registrationId)
     {
-        return unavailableCounterHandlerById.remove(registrationId) != null;
+        clientLock.lock();
+        try
+        {
+            return unavailableCounterHandlerById.remove(registrationId) != null;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
     }
 
     boolean removeUnavailableCounterHandler(final UnavailableCounterHandler handler)
@@ -916,7 +934,15 @@ class ClientConductor implements Agent
 
     boolean removeCloseHandler(final long registrationId)
     {
-        return closeHandlerByIdMap.remove(registrationId) != null;
+        clientLock.lock();
+        try
+        {
+            return closeHandlerByIdMap.remove(registrationId) != null;
+        }
+        finally
+        {
+            clientLock.unlock();
+        }
     }
 
     boolean removeCloseHandler(final Runnable handler)
@@ -1070,10 +1096,17 @@ class ClientConductor implements Agent
             workCount += checkTimeouts(nanoClock.nanoTime());
             workCount += driverEventsAdapter.receive(correlationId);
         }
+        catch (final AgentTerminationException ex)
+        {
+            if (isClientApiCall(correlationId))
+            {
+                isTerminating = true;
+                forceCloseResources();
+            }
+            throw ex;
+        }
         catch (final Throwable ex)
         {
-            handleError(ex);
-
             if (driverEventsAdapter.isInvalid())
             {
                 isTerminating = true;
@@ -1089,6 +1122,8 @@ class ClientConductor implements Agent
             {
                 throw ex;
             }
+
+            handleError(ex);
         }
 
         return workCount;
@@ -1276,7 +1311,15 @@ class ClientConductor implements Agent
             {
                 handler.onUnavailableCounter(countersReader, registrationId, counterId);
             }
-            catch (final Exception ex)
+            catch (final AgentTerminationException ex)
+            {
+                if (!isTerminating)
+                {
+                    throw ex;
+                }
+                handleError(ex);
+            }
+            catch (final Throwable ex)
             {
                 handleError(ex);
             }
@@ -1293,6 +1336,14 @@ class ClientConductor implements Agent
         try
         {
             handler.onUnavailableImage(image);
+        }
+        catch (final AgentTerminationException ex)
+        {
+            if (!isTerminating)
+            {
+                throw ex;
+            }
+            handleError(ex);
         }
         catch (final Throwable ex)
         {
@@ -1312,7 +1363,11 @@ class ClientConductor implements Agent
         {
             handler.onAvailableCounter(countersReader, registrationId, counterId);
         }
-        catch (final Exception ex)
+        catch (final AgentTerminationException ex)
+        {
+            throw ex;
+        }
+        catch (final Throwable ex)
         {
             handleError(ex);
         }
@@ -1331,7 +1386,7 @@ class ClientConductor implements Agent
             {
                 closeHandler.run();
             }
-            catch (final Exception ex)
+            catch (final Throwable ex)
             {
                 handleError(ex);
             }

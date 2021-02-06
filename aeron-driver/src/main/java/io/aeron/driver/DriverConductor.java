@@ -141,7 +141,7 @@ public final class DriverConductor implements Agent
 
         ctx.systemCounters().get(RESOLUTION_CHANGES)
             .appendToLabel(": driverName=").appendToLabel(ctx.resolverName())
-            .appendToLabel(" hostname=").appendToLabel(DriverNameResolver.getCanonicalName());
+            .appendToLabel(" hostname=").appendToLabel(DriverNameResolver.getCanonicalName("<unresolved>"));
 
         final long nowNs = nanoClock.nanoTime();
         cachedNanoClock.update(nowNs);
@@ -205,8 +205,6 @@ public final class DriverConductor implements Agent
 
         if (subscriberPositions.size() > 0)
         {
-            final UdpChannel udpChannel = channelEndpoint.udpChannel();
-            final String channel = udpChannel.originalUriString();
             final long registrationId = toDriverCommands.nextCorrelationId();
             final RawLog rawLog = newPublicationImageLog(
                 sessionId,
@@ -217,6 +215,7 @@ public final class DriverConductor implements Agent
                 senderMtuLength,
                 registrationId);
 
+            final UdpChannel udpChannel = channelEndpoint.udpChannel();
             final CongestionControl congestionControl = ctx.congestionControlSupplier().newInstance(
                 registrationId,
                 udpChannel,
@@ -237,6 +236,7 @@ public final class DriverConductor implements Agent
             final FeedbackDelayGenerator feedbackDelayGenerator = treatAsMulticast ?
                 ctx.multicastFeedbackDelayGenerator() : ctx.unicastFeedbackDelayGenerator();
 
+            final String channel = udpChannel.originalUriString();
             final PublicationImage image = new PublicationImage(
                 registrationId,
                 ctx,
@@ -279,7 +279,7 @@ public final class DriverConductor implements Agent
 
     void onChannelEndpointError(final long statusIndicatorId, final Exception ex)
     {
-        final String errorMessage = ex.getClass().getSimpleName() + " : " + ex.getMessage();
+        final String errorMessage = ex.getClass().getName() + " : " + ex.getMessage();
         clientProxy.onError(statusIndicatorId, CHANNEL_ENDPOINT_ERROR, errorMessage);
     }
 
@@ -1069,6 +1069,8 @@ public final class DriverConductor implements Agent
             ctx.unicastFlowControlSupplier().newInstance(udpChannel, streamId, registrationId);
         flowControl.initialize(ctx, udpChannel, initialTermId, params.termLength);
 
+        final RawLog rawLog = newNetworkPublicationLog(sessionId, streamId, initialTermId, registrationId, params);
+
         final UnsafeBufferPosition publisherPosition = PublisherPos.allocate(
             tempBuffer, countersManager, registrationId, sessionId, streamId, channel);
         final UnsafeBufferPosition publisherLimit = PublisherLimit.allocate(
@@ -1101,7 +1103,7 @@ public final class DriverConductor implements Agent
             ctx,
             params,
             channelEndpoint,
-            newNetworkPublicationLog(sessionId, streamId, initialTermId, registrationId, params),
+            rawLog,
             Configuration.producerWindowLength(params.termLength, ctx.publicationTermWindowLength()),
             publisherPosition,
             publisherLimit,

@@ -16,14 +16,9 @@
 package io.aeron.archive;
 
 import io.aeron.*;
-import io.aeron.archive.checksum.Checksum;
 import org.agrona.CloseHelper;
 import org.agrona.LangUtil;
 import org.agrona.concurrent.CountedErrorHandler;
-import org.agrona.concurrent.UnsafeBuffer;
-
-import java.io.IOException;
-import java.nio.channels.FileChannel;
 
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 
@@ -46,10 +41,11 @@ class RecordingSession implements Session
     private final Image image;
     private final Counter position;
     private final RecordingWriter recordingWriter;
-    private State state = State.INIT;
     private final String originalChannel;
     private final ControlSession controlSession;
     private final CountedErrorHandler countedErrorHandler;
+    private State state = State.INIT;
+    private String errorMessage = null;
 
     RecordingSession(
         final long correlationId,
@@ -60,11 +56,8 @@ class RecordingSession implements Session
         final RecordingEventsProxy recordingEventsProxy,
         final Image image,
         final Counter position,
-        final FileChannel archiveDirChannel,
         final Archive.Context ctx,
         final ControlSession controlSession,
-        final UnsafeBuffer checksumBuffer,
-        final Checksum checksum,
         final boolean autoStop)
     {
         this.correlationId = correlationId;
@@ -79,8 +72,7 @@ class RecordingSession implements Session
         progressEventPosition = image.joinPosition();
 
         blockLengthLimit = Math.min(image.termBufferLength(), ctx.fileIoMaxLength());
-        recordingWriter = new RecordingWriter(
-            recordingId, startPosition, segmentLength, image, ctx, archiveDirChannel, checksumBuffer, checksum);
+        recordingWriter = new RecordingWriter(recordingId, startPosition, segmentLength, image, ctx);
     }
 
     public long correlationId()
@@ -175,14 +167,23 @@ class RecordingSession implements Session
         return controlSession;
     }
 
+    void sendPendingError(final ControlResponseProxy controlResponseProxy)
+    {
+        if (null != errorMessage && !controlSession.isDone())
+        {
+            controlSession.attemptErrorResponse(correlationId, errorMessage, controlResponseProxy);
+        }
+    }
+
     private int init()
     {
         try
         {
             recordingWriter.init();
         }
-        catch (final IOException ex)
+        catch (final Throwable ex)
         {
+            errorMessage = ex.getClass().getName() + ": " + ex.getMessage();
             recordingWriter.close();
             state(State.STOPPED);
             LangUtil.rethrowUnchecked(ex);
@@ -206,10 +207,9 @@ class RecordingSession implements Session
 
     private int record()
     {
-        int workCount = 0;
         try
         {
-            workCount = image.blockPoll(recordingWriter, blockLengthLimit);
+            final int workCount = image.blockPoll(recordingWriter, blockLengthLimit);
 
             if (recordingWriter.isClosed())
             {
@@ -237,14 +237,15 @@ class RecordingSession implements Session
                     }
                 }
             }
-        }
-        catch (final Exception ex)
-        {
-            state(State.INACTIVE);
-            LangUtil.rethrowUnchecked(ex);
-        }
 
-        return workCount;
+            return workCount;
+        }
+        catch (final Throwable ex)
+        {
+            errorMessage = ex.getClass().getName() + ": " + ex.getMessage();
+            state(State.INACTIVE);
+            throw ex;
+        }
     }
 
     private void state(final State newState)

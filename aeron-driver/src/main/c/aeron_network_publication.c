@@ -57,19 +57,14 @@ int aeron_network_publication_create(
     bool is_exclusive,
     aeron_system_counters_t *system_counters)
 {
-    char path[AERON_MAX_PATH];
-    int path_length = aeron_network_publication_location(path, sizeof(path), context->aeron_dir, registration_id);
-
     aeron_network_publication_t *_pub = NULL;
-    const uint64_t usable_fs_space = context->usable_fs_space_func(context->aeron_dir);
     const uint64_t log_length = aeron_logbuffer_compute_log_length(params->term_length, context->file_page_size);
-    int64_t now_ns = aeron_clock_cached_nano_time(context->cached_clock);
 
     *publication = NULL;
 
-    if (usable_fs_space < log_length)
+    if (context->perform_storage_checks && context->usable_fs_space_func(context->aeron_dir) < log_length)
     {
-        aeron_set_err(
+        AERON_SET_ERR(
             ENOSPC,
             "Insufficient usable storage for new log of length=%" PRId64 " in %s", log_length, context->aeron_dir);
         return -1;
@@ -77,15 +72,17 @@ int aeron_network_publication_create(
 
     if (aeron_alloc((void **)&_pub, sizeof(aeron_network_publication_t)) < 0)
     {
-        aeron_set_err(ENOMEM, "%s", "Could not allocate network publication");
+        AERON_APPEND_ERR("%s", "Could not allocate network publication");
         return -1;
     }
 
+    char path[AERON_MAX_PATH];
+    int path_length = aeron_network_publication_location(path, sizeof(path), context->aeron_dir, registration_id);
     _pub->log_file_name = NULL;
     if (aeron_alloc((void **)(&_pub->log_file_name), (size_t)path_length + 1) < 0)
     {
         aeron_free(_pub);
-        aeron_set_err(ENOMEM, "%s", "Could not allocate network publication log_file_name");
+        AERON_APPEND_ERR("%s", "Could not allocate network publication log_file_name");
         return -1;
     }
 
@@ -97,7 +94,11 @@ int aeron_network_publication_create(
     {
         aeron_free(_pub->log_file_name);
         aeron_free(_pub);
-        aeron_set_err(aeron_errcode(), "Could not init network publication retransmit handler: %s", aeron_errmsg());
+        AERON_APPEND_ERR(
+            "%s",
+            "Could not init network publication retransmit handler, delay: %" PRIu64 ", linger: %" PRIu64,
+            context->retransmit_unicast_delay_ns,
+            context->retransmit_unicast_linger_ns);
         return -1;
     }
 
@@ -106,7 +107,7 @@ int aeron_network_publication_create(
     {
         aeron_free(_pub->log_file_name);
         aeron_free(_pub);
-        aeron_set_err(aeron_errcode(), "error mapping network raw log %s: %s", path, aeron_errmsg());
+        AERON_APPEND_ERR("error mapping network raw log: %s", path);
         return -1;
     }
     _pub->raw_log_close_func = context->raw_log_close_func;
@@ -147,6 +148,8 @@ int aeron_network_publication_create(
 
         _pub->log_meta_data->active_term_count = 0;
     }
+
+    int64_t now_ns = aeron_clock_cached_nano_time(context->cached_clock);
 
     _pub->log_meta_data->initial_term_id = initial_term_id;
     _pub->log_meta_data->mtu_length = (int32_t)params->mtu_length;
