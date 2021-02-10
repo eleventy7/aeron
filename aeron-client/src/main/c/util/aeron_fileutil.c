@@ -453,6 +453,7 @@ int aeron_raw_log_map(
         else
         {
             AERON_SET_ERR(errno, "Failed to truncate raw log, filename: %s", path);
+            close(fd);
         }
     }
     else
@@ -477,11 +478,14 @@ int aeron_raw_log_map_existing(aeron_mapped_raw_log_t *mapped_raw_log, const cha
             if (aeron_mmap(&mapped_raw_log->mapped_file, fd, 0) < 0)
             {
                 AERON_SET_ERR(errno, "Failed to mmap existing raw log, filename: %s", path);
+                return -1;
             }
         }
         else
         {
             AERON_SET_ERR(errno, "Failed to stat existing raw log, filename: %s", path);
+            close(fd);
+            return -1;
         }
 
         mapped_raw_log->log_meta_data.addr =
