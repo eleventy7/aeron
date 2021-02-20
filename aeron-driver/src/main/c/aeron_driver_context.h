@@ -32,7 +32,8 @@
 #include "aeron_system_counters.h"
 #include "aeron_cnc_file_descriptor.h"
 
-#define AERON_COMMAND_QUEUE_CAPACITY (256)
+#define AERON_COMMAND_QUEUE_CAPACITY (128)
+#define AERON_COMMAND_DRAIN_LIMIT (2)
 
 #define AERON_DRIVER_SENDER_NUM_RECV_BUFFERS (2)
 
@@ -95,6 +96,7 @@ typedef struct aeron_driver_context_stct
     uint64_t nak_unicast_delay_ns;                          /* aeron.nak.unicast.delay = 60ms */
     uint64_t nak_multicast_max_backoff_ns;                  /* aeron.nak.multicast.max.backoff = 60ms */
     uint64_t re_resolution_check_interval_ns;               /* aeron.driver.reresolution.check.interval = 1s */
+    uint64_t conductor_cycle_threshold_ns;                  /* aeron.driver.conductor.cycle.threshold = 1000 * 1000 * 1000 */
     size_t to_driver_buffer_length;                         /* aeron.conductor.buffer.length = 1MB + trailer*/
     size_t to_clients_buffer_length;                        /* aeron.clients.buffer.length = 1MB + trailer */
     size_t counters_values_buffer_length;                   /* aeron.counters.buffer.length = 1MB */
@@ -142,6 +144,8 @@ typedef struct aeron_driver_context_stct
     aeron_clock_func_t nano_clock;
     aeron_clock_func_t epoch_clock;
     aeron_clock_cache_t *cached_clock;
+    aeron_clock_cache_t *sender_cached_clock;
+    aeron_clock_cache_t *receiver_cached_clock;
 
     aeron_spsc_concurrent_array_queue_t sender_command_queue;
     aeron_spsc_concurrent_array_queue_t receiver_command_queue;

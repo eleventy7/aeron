@@ -252,7 +252,6 @@ static void aeron_driver_conductor_remove_publication_cleanup_null(
 
 static void aeron_driver_conductor_remove_subscription_cleanup_null(
     const int64_t id, const int32_t stream_id, const size_t channel_length, const char *channel)
-
 {
 }
 
@@ -327,7 +326,8 @@ static void aeron_driver_conductor_on_endpoint_change_null(const void *channel)
 #define AERON_REJOIN_STREAM_DEFAULT (true)
 #define AERON_PUBLICATION_RESERVED_SESSION_ID_LOW_DEFAULT (-1)
 #define AERON_PUBLICATION_RESERVED_SESSION_ID_HIGH_DEFAULT (1000)
-#define AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT (1 * 1000 * 1000 * 1000LL)
+#define AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
+#define AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT (1 * 1000 * 1000 * INT64_C(1000))
 
 int aeron_driver_context_init(aeron_driver_context_t **context)
 {
@@ -468,6 +468,7 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->resolver_bootstrap_neighbor = NULL;
     _context->name_resolver_init_args = NULL;
     _context->re_resolution_check_interval_ns = AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT;
+    _context->conductor_cycle_threshold_ns = AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
 
     char *value = NULL;
 
@@ -845,6 +846,13 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
         0,
         INT64_MAX);
 
+    _context->conductor_cycle_threshold_ns = aeron_config_parse_duration_ns(
+        AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_ENV_VAR,
+        getenv(AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_ENV_VAR),
+        _context->conductor_cycle_threshold_ns,
+        0,
+        UINT64_C(60) * 60 * 1000 * 1000 * 1000);
+
     _context->to_driver_buffer = NULL;
     _context->to_clients_buffer = NULL;
     _context->counters_values_buffer = NULL;
@@ -854,6 +862,14 @@ int aeron_driver_context_init(aeron_driver_context_t **context)
     _context->nano_clock = aeron_nano_clock;
     _context->epoch_clock = aeron_epoch_clock;
     if (aeron_clock_cache_alloc(&_context->cached_clock) < 0)
+    {
+        return -1;
+    }
+    if (aeron_clock_cache_alloc(&_context->sender_cached_clock) < 0)
+    {
+        return -1;
+    }
+    if (aeron_clock_cache_alloc(&_context->receiver_cached_clock) < 0)
     {
         return -1;
     }
@@ -1108,6 +1124,8 @@ int aeron_driver_context_close(aeron_driver_context_t *context)
     aeron_free(context->shared_network_idle_strategy_init_args);
     aeron_free(context->bindings_clientd_entries);
     aeron_free(context->cached_clock);
+    aeron_free(context->sender_cached_clock);
+    aeron_free(context->receiver_cached_clock);
     aeron_dl_load_libs_delete(context->dynamic_libs);
 
     aeron_free(context);
@@ -2449,4 +2467,18 @@ uint64_t aeron_driver_context_get_re_resolution_check_interval_ns(aeron_driver_c
 {
     return NULL != context ?
         context->re_resolution_check_interval_ns : AERON_DRIVER_RERESOLUTION_CHECK_INTERVAL_NS_DEFAULT;
+}
+
+int64_t aeron_driver_context_set_conductor_cycle_threshold_ns(aeron_driver_context_t *context, uint64_t value)
+{
+    AERON_DRIVER_CONTEXT_SET_CHECK_ARG_AND_RETURN(-1, context);
+
+    return context->conductor_cycle_threshold_ns = value;
+    return 0;
+}
+
+int64_t aeron_driver_context_get_conductor_cycle_threshold_ns(aeron_driver_context_t *context)
+{
+    return NULL != context ?
+        context->conductor_cycle_threshold_ns : AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_NS_DEFAULT;
 }

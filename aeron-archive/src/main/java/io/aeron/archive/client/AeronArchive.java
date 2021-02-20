@@ -1,5 +1,5 @@
 /*
- *  Copyright 2014-2021 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,6 @@ import io.aeron.security.CredentialsSupplier;
 import io.aeron.security.NullCredentialsSupplier;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
-import org.agrona.LangUtil;
 import org.agrona.SemanticVersion;
 import org.agrona.concurrent.*;
 
@@ -1819,15 +1818,14 @@ public final class AeronArchive implements AutoCloseable
 
     private void checkDeadline(final long deadlineNs, final String errorMessage, final long correlationId)
     {
-        if (Thread.interrupted())
-        {
-            LangUtil.rethrowUnchecked(new InterruptedException());
-        }
-
         if (deadlineNs - nanoClock.nanoTime() < 0)
         {
-            throw new TimeoutException(
-                errorMessage + " - correlationId=" + correlationId, AeronException.Category.ERROR);
+            throw new TimeoutException(errorMessage + " - correlationId=" + correlationId);
+        }
+
+        if (Thread.currentThread().isInterrupted())
+        {
+            throw new AeronException("unexpected interrupt");
         }
     }
 
@@ -3074,14 +3072,14 @@ public final class AeronArchive implements AutoCloseable
 
         private void checkDeadline()
         {
-            if (Thread.interrupted())
-            {
-                LangUtil.rethrowUnchecked(new InterruptedException());
-            }
-
             if (deadlineNs - nanoClock.nanoTime() < 0)
             {
                 throw new TimeoutException("Archive connect timeout: step=" + step);
+            }
+
+            if (Thread.currentThread().isInterrupted())
+            {
+                throw new AeronException("unexpected interrupt");
             }
         }
     }

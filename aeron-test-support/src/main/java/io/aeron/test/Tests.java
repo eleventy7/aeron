@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2020 Real Logic Ltd.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -146,9 +146,13 @@ public class Tests
 
     public static StringBuilder appendStackTrace(final StringBuilder sb)
     {
+        return appendStackTrace(sb, Thread.currentThread().getStackTrace());
+    }
+
+    public static StringBuilder appendStackTrace(final StringBuilder sb, final StackTraceElement[] stackTraceElements)
+    {
         sb.append(System.lineSeparator());
 
-        final StackTraceElement[] stackTraceElements = Thread.currentThread().getStackTrace();
         for (int i = 1, length = stackTraceElements.length; i < length; i++)
         {
             sb.append(stackTraceElements[i]).append(System.lineSeparator());

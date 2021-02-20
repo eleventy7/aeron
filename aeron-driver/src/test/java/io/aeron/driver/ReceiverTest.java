@@ -114,6 +114,8 @@ public class ReceiverTest
         .nanoClock(nanoClock)
         .epochClock(epochClock)
         .cachedNanoClock(nanoClock)
+        .senderCachedNanoClock(nanoClock)
+        .receiverCachedNanoClock(nanoClock)
         .lossReport(mockLossReport);
 
     private ReceiveChannelEndpoint receiveChannelEndpoint;
@@ -146,6 +148,8 @@ public class ReceiverTest
             .receiverCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
             .nanoClock(nanoClock)
             .cachedNanoClock(nanoClock)
+            .senderCachedNanoClock(nanoClock)
+            .receiverCachedNanoClock(nanoClock)
             .receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals())
             .driverConductorProxy(driverConductorProxy);
 
@@ -164,7 +168,9 @@ public class ReceiverTest
         final MediaDriver.Context receiverChannelContext = new MediaDriver.Context()
             .receiveChannelEndpointThreadLocals(new ReceiveChannelEndpointThreadLocals())
             .systemCounters(mockSystemCounters)
-            .cachedNanoClock(nanoClock);
+            .cachedNanoClock(nanoClock)
+            .senderCachedNanoClock(nanoClock)
+            .receiverCachedNanoClock(nanoClock);
 
         receiveChannelEndpoint = new ReceiveChannelEndpoint(
             UdpChannel.parse(URI),
@@ -220,10 +226,8 @@ public class ReceiverTest
 
         assertThat(messagesRead, is(1));
 
+        nanoClock.advance(STATUS_MESSAGE_TIMEOUT * 2);
         receiver.doWork();
-
-        image.trackRebuild(nanoClock.nanoTime() + (2 * STATUS_MESSAGE_TIMEOUT), STATUS_MESSAGE_TIMEOUT);
-        image.sendPendingStatusMessage();
 
         final ByteBuffer rcvBuffer = ByteBuffer.allocateDirect(256);
         InetSocketAddress rcvAddress;

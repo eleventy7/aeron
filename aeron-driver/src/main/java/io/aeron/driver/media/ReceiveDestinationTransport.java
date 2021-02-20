@@ -65,7 +65,7 @@ public final class ReceiveDestinationTransport extends ReceiveDestinationTranspo
     {
         super(udpChannel, udpChannel.remoteData(), udpChannel.remoteData(), null, context);
 
-        this.timeOfLastActivityNs = context.cachedNanoClock().nanoTime();
+        this.timeOfLastActivityNs = context.receiverCachedNanoClock().nanoTime();
         this.currentControlAddress = udpChannel.hasExplicitControl() ? udpChannel.localControl() : null;
         this.localSocketAddressIndicator = localSocketAddressIndicator;
     }
@@ -100,6 +100,9 @@ public final class ReceiveDestinationTransport extends ReceiveDestinationTranspo
         localSocketAddressIndicator.setOrdered(ChannelEndpointStatus.ACTIVE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void close()
     {
         CloseHelper.close(localSocketAddressIndicator);

@@ -537,12 +537,12 @@ public class Configuration
     /**
      * Limit for the number of commands drained in one operation.
      */
-    public static final int COMMAND_DRAIN_LIMIT = 10;
+    public static final int COMMAND_DRAIN_LIMIT = 2;
 
     /**
      * Capacity for the command queues used between driver agents.
      */
-    public static final int CMD_QUEUE_CAPACITY = 256;
+    public static final int CMD_QUEUE_CAPACITY = 128;
 
     /**
      * Timeout on cleaning up pending SETUP message state on subscriber.
@@ -705,6 +705,16 @@ public class Configuration
      * Default value for the re-resolution check interval.
      */
     public static final long RE_RESOLUTION_CHECK_INTERVAL_DEFAULT_NS = TimeUnit.SECONDS.toNanos(1);
+
+    /**
+     * Property name for threshold value for the conductor work cycle threshold to track for being exceeded.
+     */
+    public static final String CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME = "aeron.driver.conductor.cycle.threshold";
+
+    /**
+     * Default threshold value for the conductor work cycle threshold to track for being exceeded.
+     */
+    public static final long CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(1000);
 
     /**
      * Should the driver configuration be printed on start.
@@ -1373,6 +1383,16 @@ public class Configuration
         }
 
         return ThreadingMode.valueOf(propertyValue);
+    }
+
+    /**
+     * Get threshold value for the conductor work cycle threshold to track for being exceeded.
+     *
+     * @return threshold value in nanoseconds.
+     */
+    public static long conductorCycleThresholdNs()
+    {
+        return getDurationInNanos(CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME, CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS);
     }
 
     /**

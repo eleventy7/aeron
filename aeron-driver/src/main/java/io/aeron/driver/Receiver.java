@@ -43,6 +43,7 @@ public final class Receiver implements Agent
     private final OneToOneConcurrentArrayQueue<Runnable> commandQueue;
     private final AtomicCounter totalBytesReceived;
     private final AtomicCounter resolutionChanges;
+    private final NanoClock nanoClock;
     private final CachedNanoClock cachedNanoClock;
     private PublicationImage[] publicationImages = EMPTY_IMAGES;
     private final ArrayList<PendingSetupMessageFromSource> pendingSetupMessages = new ArrayList<>();
@@ -56,28 +57,50 @@ public final class Receiver implements Agent
         commandQueue = ctx.receiverCommandQueue();
         totalBytesReceived = ctx.systemCounters().get(BYTES_RECEIVED);
         resolutionChanges = ctx.systemCounters().get(RESOLUTION_CHANGES);
-        cachedNanoClock = ctx.cachedNanoClock();
+        nanoClock = ctx.nanoClock();
+        cachedNanoClock = ctx.receiverCachedNanoClock();
         conductorProxy = ctx.driverConductorProxy();
         reResolutionCheckIntervalNs = ctx.reResolutionCheckIntervalNs();
-        reResolutionDeadlineNs = cachedNanoClock.nanoTime() + reResolutionCheckIntervalNs;
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    public void onStart()
+    {
+        final long nowNs = nanoClock.nanoTime();
+        this.cachedNanoClock.update(nowNs);
+        reResolutionDeadlineNs = nowNs + reResolutionCheckIntervalNs;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public void onClose()
     {
         dataTransportPoller.close();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public String roleName()
     {
         return "receiver";
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public int doWork()
     {
+        final long nowNs = nanoClock.nanoTime();
+        cachedNanoClock.update(nowNs);
+
         int workCount = commandQueue.drain(Runnable::run, Configuration.COMMAND_DRAIN_LIMIT);
+
         final int bytesReceived = dataTransportPoller.pollTransports();
         totalBytesReceived.getAndAddOrdered(bytesReceived);
-        final long nowNs = cachedNanoClock.nanoTime();
 
         final PublicationImage[] publicationImages = this.publicationImages;
         for (int lastIndex = publicationImages.length - 1, i = lastIndex; i >= 0; i--)
@@ -85,7 +108,7 @@ public final class Receiver implements Agent
             final PublicationImage image = publicationImages[i];
             if (image.hasActivityAndNotEndOfStream(nowNs))
             {
-                workCount += image.sendPendingStatusMessage();
+                workCount += image.sendPendingStatusMessage(nowNs);
                 workCount += image.processPendingLoss();
                 workCount += image.initiateAnyRttMeasurements(nowNs);
             }
@@ -125,28 +148,28 @@ public final class Receiver implements Agent
 
     void onAddSubscription(final ReceiveChannelEndpoint channelEndpoint, final int streamId)
     {
-        channelEndpoint.addSubscription(streamId);
+        channelEndpoint.dispatcher().addSubscription(streamId);
     }
 
     void onAddSubscription(final ReceiveChannelEndpoint channelEndpoint, final int streamId, final int sessionId)
     {
-        channelEndpoint.addSubscription(streamId, sessionId);
+        channelEndpoint.dispatcher().addSubscription(streamId, sessionId);
     }
 
     void onRemoveSubscription(final ReceiveChannelEndpoint channelEndpoint, final int streamId)
     {
-        channelEndpoint.removeSubscription(streamId);
+        channelEndpoint.dispatcher().removeSubscription(streamId);
     }
 
     void onRemoveSubscription(final ReceiveChannelEndpoint channelEndpoint, final int streamId, final int sessionId)
     {
-        channelEndpoint.removeSubscription(streamId, sessionId);
+        channelEndpoint.dispatcher().removeSubscription(streamId, sessionId);
     }
 
     void onNewPublicationImage(final ReceiveChannelEndpoint channelEndpoint, final PublicationImage image)
     {
         publicationImages = ArrayUtil.add(publicationImages, image);
-        channelEndpoint.addPublicationImage(image);
+        channelEndpoint.dispatcher().addPublicationImage(image);
     }
 
     void onRegisterReceiveChannelEndpoint(final ReceiveChannelEndpoint channelEndpoint)
@@ -189,7 +212,7 @@ public final class Receiver implements Agent
 
     void onRemoveCoolDown(final ReceiveChannelEndpoint channelEndpoint, final int sessionId, final int streamId)
     {
-        channelEndpoint.removeCoolDown(sessionId, streamId);
+        channelEndpoint.dispatcher().removeCoolDown(sessionId, streamId);
     }
 
     void onAddDestination(final ReceiveChannelEndpoint channelEndpoint, final ReceiveDestinationTransport transport)

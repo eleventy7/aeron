@@ -152,7 +152,17 @@ public enum SystemCounterDescriptor
     /**
      * Count of the times a connection endpoint has be re-resolved resulting in a change.
      */
-    RESOLUTION_CHANGES(25, "Resolution changes");
+    RESOLUTION_CHANGES(25, "Resolution changes"),
+
+    /**
+     * The maximum time spent by the conductor between work cycles.
+     */
+    CONDUCTOR_MAX_CYCLE_TIME(26, "Conductor max cycle time doing its work (ns)"),
+
+    /**
+     * Count of the number of times the cycle time threshold has been exceeded by the conductor in its work cycle.
+     */
+    CONDUCTOR_CYCLE_TIME_THRESHOLD_EXCEEDED(27, "Conductor work cycle exceeded threshold count");
 
     /**
      * All system counters have the same type id, i.e. system counters are the same type. Other types can exist.

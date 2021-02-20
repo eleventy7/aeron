@@ -436,6 +436,7 @@ public final class MediaDriver implements AutoCloseable
         private long nakMulticastMaxBackoffNs = Configuration.nakMulticastMaxBackoffNs();
         private long flowControlReceiverTimeoutNs = Configuration.flowControlReceiverTimeoutNs();
         private long reResolutionCheckIntervalNs = Configuration.reResolutionCheckIntervalNs();
+        private long conductorCycleThresholdNs = Configuration.conductorCycleThresholdNs();
 
         private int conductorBufferLength = Configuration.conductorBufferLength();
         private int toClientsBufferLength = Configuration.toClientsBufferLength();
@@ -470,6 +471,8 @@ public final class MediaDriver implements AutoCloseable
         private NanoClock nanoClock;
         private CachedEpochClock cachedEpochClock;
         private CachedNanoClock cachedNanoClock;
+        private CachedNanoClock senderCachedNanoClock;
+        private CachedNanoClock receiverCachedNanoClock;
         private ThreadingMode threadingMode;
         private ThreadFactory conductorThreadFactory;
         private ThreadFactory senderThreadFactory;
@@ -565,6 +568,9 @@ public final class MediaDriver implements AutoCloseable
             }
         }
 
+        /**
+         * {@inheritDoc}
+         */
         public Context conclude()
         {
             super.conclude();
@@ -1871,7 +1877,7 @@ public final class MediaDriver implements AutoCloseable
 
         /**
          * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration. This is updated
-         * once per duty cycle of the {@link DriverConductor}.
+         * once per work cycle of the {@link DriverConductor}.
          *
          * @return the {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration.
          */
@@ -1881,7 +1887,8 @@ public final class MediaDriver implements AutoCloseable
         }
 
         /**
-         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration.
+         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration for the
+         * {@link DriverConductor}.
          *
          * @param clock to be used.
          * @return this for a fluent API.
@@ -1889,6 +1896,54 @@ public final class MediaDriver implements AutoCloseable
         public Context cachedNanoClock(final CachedNanoClock clock)
         {
             cachedNanoClock = clock;
+            return this;
+        }
+
+        /**
+         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration. This is updated
+         * once per work cycle of the {@link Sender}.
+         *
+         * @return the {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration.
+         */
+        public CachedNanoClock senderCachedNanoClock()
+        {
+            return senderCachedNanoClock;
+        }
+
+        /**
+         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration for the
+         * {@link Sender}.
+         *
+         * @param clock to be used.
+         * @return this for a fluent API.
+         */
+        public Context senderCachedNanoClock(final CachedNanoClock clock)
+        {
+            senderCachedNanoClock = clock;
+            return this;
+        }
+
+        /**
+         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration. This is updated
+         * once per work cycle of the {@link Receiver}.
+         *
+         * @return the {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration.
+         */
+        public CachedNanoClock receiverCachedNanoClock()
+        {
+            return receiverCachedNanoClock;
+        }
+
+        /**
+         * The {@link CachedNanoClock} as a source of time in nanoseconds for measuring duration for the
+         * {@link Receiver}.
+         *
+         * @param clock to be used.
+         * @return this for a fluent API.
+         */
+        public Context receiverCachedNanoClock(final CachedNanoClock clock)
+        {
+            receiverCachedNanoClock = clock;
             return this;
         }
 
@@ -2969,6 +3024,32 @@ public final class MediaDriver implements AutoCloseable
             return this;
         }
 
+        /**
+         * Set a threshold for the conductor work cycle time which when exceed it will increment the
+         * {@link io.aeron.driver.status.SystemCounterDescriptor#CONDUCTOR_CYCLE_TIME_THRESHOLD_EXCEEDED} counter.
+         *
+         * @param thresholdNs value in nanoseconds
+         * @return this for fluent API.
+         * @see Configuration#CONDUCTOR_CYCLE_THRESHOLD_PROP_NAME
+         * @see Configuration#CONDUCTOR_CYCLE_THRESHOLD_DEFAULT_NS
+         */
+        public Context conductorCycleThresholdNs(final long thresholdNs)
+        {
+            this.conductorCycleThresholdNs = thresholdNs;
+            return this;
+        }
+
+        /**
+         * Threshold for the conductor work cycle time which when exceed it will increment the
+         * {@link io.aeron.driver.status.SystemCounterDescriptor#CONDUCTOR_CYCLE_TIME_THRESHOLD_EXCEEDED} counter.
+         *
+         * @return threshold to track for the conductor work cycle time.
+         */
+        public long conductorCycleThresholdNs()
+        {
+            return conductorCycleThresholdNs;
+        }
+
         OneToOneConcurrentArrayQueue<Runnable> receiverCommandQueue()
         {
             return receiverCommandQueue;
@@ -3116,6 +3197,16 @@ public final class MediaDriver implements AutoCloseable
             if (null == cachedNanoClock)
             {
                 cachedNanoClock = new CachedNanoClock();
+            }
+
+            if (null == senderCachedNanoClock)
+            {
+                senderCachedNanoClock = new CachedNanoClock();
+            }
+
+            if (null == receiverCachedNanoClock)
+            {
+                receiverCachedNanoClock = new CachedNanoClock();
             }
 
             if (null == unicastFlowControlSupplier)
@@ -3368,6 +3459,9 @@ public final class MediaDriver implements AutoCloseable
             }
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @SuppressWarnings("MethodLength")
         public String toString()
         {
@@ -3408,6 +3502,7 @@ public final class MediaDriver implements AutoCloseable
                 "\n    nakMulticastGroupSize=" + nakMulticastGroupSize +
                 "\n    statusMessageTimeoutNs=" + statusMessageTimeoutNs +
                 "\n    counterFreeToReuseTimeoutNs=" + counterFreeToReuseTimeoutNs +
+                "\n    conductorCycleThresholdNs=" + conductorCycleThresholdNs +
                 "\n    publicationTermBufferLength=" + publicationTermBufferLength +
                 "\n    ipcTermBufferLength=" + ipcTermBufferLength +
                 "\n    publicationTermWindowLength=" + publicationTermWindowLength +

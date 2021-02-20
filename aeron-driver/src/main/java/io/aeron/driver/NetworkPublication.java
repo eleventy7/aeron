@@ -146,7 +146,7 @@ public final class NetworkPublication
     private final ByteBuffer rttMeasurementBuffer;
     private final RttMeasurementFlyweight rttMeasurementHeader;
     private final FlowControl flowControl;
-    private final CachedNanoClock nanoClock;
+    private final CachedNanoClock cachedNanoClock;
     private final RetransmitHandler retransmitHandler;
     private final UnsafeBuffer metaDataBuffer;
     private final RawLog rawLog;
@@ -186,7 +186,7 @@ public final class NetworkPublication
         this.tag = params.entityTag;
         this.channelEndpoint = channelEndpoint;
         this.rawLog = rawLog;
-        this.nanoClock = ctx.cachedNanoClock();
+        this.cachedNanoClock = ctx.senderCachedNanoClock();
         this.senderPosition = senderPosition;
         this.senderLimit = senderLimit;
         this.flowControl = flowControl;
@@ -225,7 +225,7 @@ public final class NetworkPublication
         termBufferLength = termLength;
         termLengthMask = termLength - 1;
 
-        final long nowNs = nanoClock.nanoTime();
+        final long nowNs = cachedNanoClock.nanoTime();
         timeOfLastDataOrHeartbeatNs = nowNs - PUBLICATION_HEARTBEAT_TIMEOUT_NS - 1;
         timeOfLastSetupNs = nowNs - PUBLICATION_SETUP_TIMEOUT_NS - 1;
         timeOfLastStatusMessageNs = nowNs;
@@ -238,11 +238,17 @@ public final class NetworkPublication
         timeOfLastActivityNs = nowNs;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public boolean free()
     {
         return rawLog.free();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void close()
     {
         CloseHelper.close(errorHandler, publisherPos);
@@ -311,19 +317,23 @@ public final class NetworkPublication
     {
         if (!isEndOfStream)
         {
-            timeOfLastStatusMessageNs = nanoClock.nanoTime();
+            timeOfLastStatusMessageNs = cachedNanoClock.nanoTime();
             isSetupElicited = true;
         }
     }
 
-    public void addSubscriber(final SubscriptionLink subscriptionLink, final ReadablePosition position)
+    /**
+     * {@inheritDoc}
+     */
+    public void addSubscriber(
+        final SubscriptionLink subscriptionLink, final ReadablePosition position, final long nowNs)
     {
         spyPositions = ArrayUtil.add(spyPositions, position);
         hasSpies = true;
 
         if (!subscriptionLink.isTether())
         {
-            untetheredSubscriptions.add(new UntetheredSubscription(subscriptionLink, position, nanoClock.nanoTime()));
+            untetheredSubscriptions.add(new UntetheredSubscription(subscriptionLink, position, nowNs));
         }
 
         if (spiesSimulateConnection)
@@ -333,6 +343,9 @@ public final class NetworkPublication
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void removeSubscriber(final SubscriptionLink subscriptionLink, final ReadablePosition position)
     {
         spyPositions = ArrayUtil.remove(spyPositions, position);
@@ -382,7 +395,7 @@ public final class NetworkPublication
             hasInitialConnection = true;
         }
 
-        final long timeNs = nanoClock.nanoTime();
+        final long timeNs = cachedNanoClock.nanoTime();
         timeOfLastStatusMessageNs = timeNs;
 
         senderLimit.setOrdered(flowControl.onStatusMessage(
@@ -429,6 +442,9 @@ public final class NetworkPublication
         // handling of RTT measurements would be done in an else clause here.
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void resend(final int termId, final int termOffset, final int length)
     {
         final long senderPosition = this.senderPosition.get();
@@ -857,6 +873,9 @@ public final class NetworkPublication
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void onTimeEvent(final long timeNs, final long timeMs, final DriverConductor conductor)
     {
         switch (state)
@@ -917,6 +936,9 @@ public final class NetworkPublication
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public boolean hasReachedEndOfLife()
     {
         return hasSenderReleased;
@@ -935,7 +957,6 @@ public final class NetworkPublication
                 isEndOfStream = true;
             }
 
-            timeOfLastActivityNs = nanoClock.nanoTime();
             state = State.DRAINING;
         }
     }

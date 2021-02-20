@@ -145,6 +145,25 @@ static bool aeron_driver_conductor_has_clashing_subscription(
     return false;
 }
 
+static int aeron_driver_conductor_validate_destination_uri(
+    const char *channel_uri, int32_t channel_length, const char *transport_direction)
+{
+    if ((int32_t)AERON_SPY_PREFIX_LEN <= channel_length &&
+        0 == strncmp(channel_uri, AERON_SPY_PREFIX, AERON_SPY_PREFIX_LEN))
+    {
+        AERON_SET_ERR(
+            -AERON_ERROR_CODE_INVALID_CHANNEL,
+            "Aeron spies are invalid as %s destinations: %.*s",
+            transport_direction,
+            (int)channel_length,
+            channel_uri);
+
+        return -1;
+    }
+
+    return 0;
+}
+
 int aeron_driver_conductor_init(aeron_driver_conductor_t *conductor, aeron_driver_context_t *context)
 {
     if (aeron_mpsc_rb_init(
@@ -290,10 +309,15 @@ int aeron_driver_conductor_init(aeron_driver_conductor_t *conductor, aeron_drive
         &conductor->counters_manager, AERON_SYSTEM_COUNTER_UNBLOCKED_COMMANDS);
     conductor->client_timeouts_counter = aeron_counters_manager_addr(
         &conductor->counters_manager, AERON_SYSTEM_COUNTER_CLIENT_TIMEOUTS);
+    conductor->max_cycle_time_counter = aeron_counters_manager_addr(
+        &conductor->counters_manager, AERON_SYSTEM_COUNTER_CONDUCTOR_MAX_CYCLE_TIME);
+    conductor->cycle_time_threshold_exceeded_counter = aeron_counters_manager_addr(
+        &conductor->counters_manager, AERON_SYSTEM_COUNTER_CONDUCTOR_CYCLE_TIME_THRESHOLD_EXCEEDED);
 
     int64_t now_ns = context->nano_clock();
+    aeron_clock_update_cached_time(context->cached_clock, context->epoch_clock(), now_ns);
 
-    conductor->clock_update_deadline_ns = 0;
+    conductor->clock_update_deadline_ns = now_ns + AERON_DRIVER_CONDUCTOR_CLOCK_UPDATE_INTERNAL_NS;
     conductor->time_of_last_timeout_check_ns = now_ns;
     conductor->time_of_last_to_driver_position_change_ns = now_ns;
     conductor->next_session_id = aeron_randomised_int32();
@@ -2275,27 +2299,39 @@ void aeron_driver_conductor_on_check_for_blocked_driver_commands(aeron_driver_co
     }
 }
 
-void aeron_driver_conductor_update_clocks(aeron_driver_conductor_t *conductor, int64_t now_ns)
+void aeron_driver_conductor_track_time(aeron_driver_conductor_t *conductor, int64_t now_ns)
 {
-    if (conductor->clock_update_deadline_ns - now_ns <= 0)
+    int64_t cycle_time_ns = now_ns - aeron_clock_cached_nano_time(conductor->context->cached_clock);
+    aeron_clock_update_cached_nano_time(conductor->context->cached_clock, now_ns);
+
+    aeron_counter_propose_max_ordered(conductor->max_cycle_time_counter, cycle_time_ns);
+    if (cycle_time_ns > (int64_t)(conductor->context->conductor_cycle_threshold_ns))
     {
-        conductor->clock_update_deadline_ns = now_ns + AERON_DRIVER_CONDUCTOR_CLOCK_UPDATE_DURATION_NS;
-        aeron_clock_update_cached_time(conductor->context->cached_clock, conductor->context->epoch_clock(), now_ns);
+        aeron_counter_ordered_increment(conductor->cycle_time_threshold_exceeded_counter, 1);
+    }
+
+    if (now_ns >= conductor->clock_update_deadline_ns)
+    {
+        conductor->clock_update_deadline_ns = now_ns + AERON_DRIVER_CONDUCTOR_CLOCK_UPDATE_INTERNAL_NS;
+        aeron_clock_update_cached_epoch_time(conductor->context->cached_clock, conductor->context->epoch_clock());
     }
 }
 
 int aeron_driver_conductor_do_work(void *clientd)
 {
     aeron_driver_conductor_t *conductor = (aeron_driver_conductor_t *)clientd;
-    int work_count = 0;
     const int64_t now_ns = conductor->context->nano_clock();
-    aeron_driver_conductor_update_clocks(conductor, now_ns);
+    aeron_driver_conductor_track_time(conductor, now_ns);
     const int64_t now_ms = aeron_clock_cached_epoch_time(conductor->context->cached_clock);
+    int work_count = 0;
 
     work_count += (int)aeron_mpsc_rb_read(
-        &conductor->to_driver_commands, aeron_driver_conductor_on_command, conductor, 10);
+        &conductor->to_driver_commands, aeron_driver_conductor_on_command, conductor, AERON_COMMAND_DRAIN_LIMIT);
     work_count += (int)aeron_mpsc_concurrent_array_queue_drain(
-        conductor->conductor_proxy.command_queue, aeron_driver_conductor_on_command_queue, conductor, 10);
+        conductor->conductor_proxy.command_queue,
+        aeron_driver_conductor_on_command_queue,
+        conductor,
+        AERON_COMMAND_DRAIN_LIMIT);
     work_count += conductor->name_resolver.do_work_func(&conductor->name_resolver, now_ms);
 
     if (now_ns >= (conductor->time_of_last_timeout_check_ns + (int64_t)conductor->context->timer_interval_ns))
@@ -2319,8 +2355,7 @@ int aeron_driver_conductor_do_work(void *clientd)
 
     for (size_t i = 0, length = conductor->publication_images.length; i < length; i++)
     {
-        aeron_publication_image_track_rebuild(
-            conductor->publication_images.array[i].image, now_ns, conductor->context->status_message_timeout_ns);
+        aeron_publication_image_track_rebuild(conductor->publication_images.array[i].image, now_ns);
     }
 
     return work_count;
@@ -3174,8 +3209,14 @@ int aeron_driver_conductor_on_add_destination(aeron_driver_conductor_t *conducto
 
     if (NULL != endpoint)
     {
+        aeron_uri_t *uri = NULL; // Ownership is transferred to destination, no need to close...
         const char *command_uri = (const char *)command + sizeof(aeron_destination_command_t);
-        aeron_uri_t *uri; // Ownership is transferred to destination, no need to close...
+
+        if (aeron_driver_conductor_validate_destination_uri(command_uri, command->channel_length, "send") < 0)
+        {
+            goto error_cleanup;
+        }
+
         if (aeron_alloc((void **)&uri, sizeof(aeron_uri_t)) < 0)
         {
             AERON_APPEND_ERR("%s", "Failed to allocate uri");
@@ -3343,6 +3384,11 @@ int aeron_driver_conductor_on_add_receive_destination(
     }
 
     const char *command_uri = (const char *)command + sizeof(aeron_destination_command_t);
+
+    if (aeron_driver_conductor_validate_destination_uri(command_uri, command->channel_length, "receive") < 0)
+    {
+        return -1;
+    }
 
     aeron_udp_channel_t *udp_channel = NULL;
     if (aeron_udp_channel_parse(

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014-2018 Real Logic Limited.
+ * Copyright 2014-2021 Real Logic Limited.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -581,6 +581,9 @@ public final class ReplayMerge implements AutoCloseable
         return archive.controlResponsePoller().relevantId();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public String toString()
     {
         return "ReplayMerge{" +

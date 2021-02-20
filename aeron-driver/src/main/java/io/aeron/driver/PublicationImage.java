@@ -119,18 +119,19 @@ public final class PublicationImage
     private volatile long endSmChange = Aeron.NULL_VALUE;
     private long nextSmPosition;
     private int nextSmReceiverWindowLength;
-    private long timeOfLastStatusMessageScheduleNs;
 
+    private long lastSmChangeNumber = Aeron.NULL_VALUE;
     private long lastSmPosition;
     private long lastSmWindowLimit;
-    private long lastSmChangeNumber = Aeron.NULL_VALUE;
-    private long lastLossChangeNumber = Aeron.NULL_VALUE;
+    private long timeOfLastSmNs;
+    private final long smTimeoutNs;
 
     private volatile long beginLossChange = Aeron.NULL_VALUE;
     private volatile long endLossChange = Aeron.NULL_VALUE;
     private int lossTermId;
     private int lossTermOffset;
     private int lossLength;
+    private long lastLossChangeNumber = Aeron.NULL_VALUE;
 
     private long timeOfLastStateChangeNs;
 
@@ -148,7 +149,6 @@ public final class PublicationImage
     private boolean isRebuilding = true;
     private volatile State state = State.INIT;
 
-    private final NanoClock nanoClock;
     private final CachedNanoClock cachedNanoClock;
     private final ReceiveChannelEndpoint channelEndpoint;
     private final UnsafeBuffer[] termBuffers;
@@ -164,7 +164,8 @@ public final class PublicationImage
     private final AtomicCounter flowControlUnderRuns;
     private final AtomicCounter flowControlOverRuns;
     private final AtomicCounter lossGapFills;
-    private final CachedEpochClock cachedEpochClock;
+    private final EpochClock epochClock;
+    private final NanoClock nanoClock;
     private final RawLog rawLog;
 
     PublicationImage(
@@ -190,6 +191,7 @@ public final class PublicationImage
         this.imageLivenessTimeoutNs = ctx.imageLivenessTimeoutNs();
         this.untetheredWindowLimitTimeoutNs = ctx.untetheredWindowLimitTimeoutNs();
         this.untetheredRestingTimeoutNs = ctx.untetheredRestingTimeoutNs();
+        this.smTimeoutNs = ctx.statusMessageTimeoutNs();
         this.channelEndpoint = channelEndpoint;
         this.sessionId = sessionId;
         this.streamId = streamId;
@@ -203,8 +205,8 @@ public final class PublicationImage
         this.lossReport = ctx.lossReport();
 
         this.nanoClock = ctx.nanoClock();
-        this.cachedNanoClock = ctx.cachedNanoClock();
-        this.cachedEpochClock = ctx.cachedEpochClock();
+        this.epochClock = ctx.epochClock();
+        this.cachedNanoClock = ctx.receiverCachedNanoClock();
 
         final long nowNs = cachedNanoClock.nanoTime();
         this.timeOfLastStateChangeNs = nowNs;
@@ -315,13 +317,13 @@ public final class PublicationImage
     /**
      * {@inheritDoc}
      */
-    public void addSubscriber(final SubscriptionLink subscriptionLink, final ReadablePosition subscriberPosition)
+    public void addSubscriber(
+        final SubscriptionLink subscriptionLink, final ReadablePosition subscriberPosition, final long nowNs)
     {
         subscriberPositions = ArrayUtil.add(subscriberPositions, subscriberPosition);
         if (!subscriptionLink.isTether())
         {
-            untetheredSubscriptions.add(new UntetheredSubscription(
-                subscriptionLink, subscriberPosition, timeOfLastStatusMessageScheduleNs));
+            untetheredSubscriptions.add(new UntetheredSubscription(subscriptionLink, subscriberPosition, nowNs));
         }
     }
 
@@ -361,22 +363,19 @@ public final class PublicationImage
         final long changeNumber = beginLossChange + 1;
 
         beginLossChange = changeNumber;
-
         lossTermId = termId;
         lossTermOffset = termOffset;
         lossLength = length;
-
         endLossChange = changeNumber;
 
         if (null != reportEntry)
         {
-            reportEntry.recordObservation(length, cachedEpochClock.time());
+            reportEntry.recordObservation(length, epochClock.time());
         }
         else if (null != lossReport)
         {
             final String source = Configuration.sourceIdentity(sourceAddress);
-            final long timeMs = cachedEpochClock.time();
-            reportEntry = lossReport.createEntry(length, timeMs, sessionId, streamId, channel(), source);
+            reportEntry = lossReport.createEntry(length, epochClock.time(), sessionId, streamId, channel(), source);
 
             if (null == reportEntry)
             {
@@ -411,7 +410,7 @@ public final class PublicationImage
      */
     void removeFromDispatcher()
     {
-        channelEndpoint.removePublicationImage(this);
+        channelEndpoint.dispatcher().removePublicationImage(this);
     }
 
     /**
@@ -474,7 +473,7 @@ public final class PublicationImage
         trackConnection(transportIndex, remoteAddress, cachedNanoClock.nanoTime());
     }
 
-    int trackRebuild(final long nowNs, final long statusMessageTimeoutNs)
+    int trackRebuild(final long nowNs)
     {
         int workCount = 0;
 
@@ -518,11 +517,10 @@ public final class PublicationImage
             final int threshold = CongestionControl.threshold(windowLength);
 
             if (CongestionControl.shouldForceStatusMessage(ccOutcome) ||
-                ((timeOfLastStatusMessageScheduleNs + statusMessageTimeoutNs) - nowNs < 0) ||
                 (minSubscriberPosition > (nextSmPosition + threshold)))
             {
                 cleanBufferTo(minSubscriberPosition - (termLengthMask + 1));
-                scheduleStatusMessage(nowNs, minSubscriberPosition, windowLength);
+                scheduleStatusMessage(minSubscriberPosition, windowLength);
                 workCount += 1;
             }
         }
@@ -610,14 +608,15 @@ public final class PublicationImage
     /**
      * Called from the {@link Receiver} to send any pending Status Messages.
      *
+     * @param nowNs current time.
      * @return number of work items processed.
      */
-    int sendPendingStatusMessage()
+    int sendPendingStatusMessage(final long nowNs)
     {
         int workCount = 0;
         final long changeNumber = endSmChange;
 
-        if (changeNumber != lastSmChangeNumber)
+        if (changeNumber != lastSmChangeNumber || (timeOfLastSmNs + smTimeoutNs) - nowNs < 0)
         {
             final long smPosition = nextSmPosition;
             final int receiverWindowLength = nextSmReceiverWindowLength;
@@ -637,6 +636,7 @@ public final class PublicationImage
                 lastSmPosition = smPosition;
                 lastSmWindowLimit = smPosition + receiverWindowLength;
                 lastSmChangeNumber = changeNumber;
+                timeOfLastSmNs = nowNs;
 
                 updateActiveTransportCount();
             }
@@ -882,17 +882,15 @@ public final class PublicationImage
         return true;
     }
 
-    private void scheduleStatusMessage(final long nowNs, final long smPosition, final int receiverWindowLength)
+    private void scheduleStatusMessage(final long smPosition, final int receiverWindowLength)
     {
         final long changeNumber = beginSmChange + 1;
+
         UNSAFE.putOrderedLong(this, BEGIN_SM_CHANGE_OFFSET, changeNumber);
         UNSAFE.storeFence();
-
         nextSmPosition = smPosition;
         nextSmReceiverWindowLength = receiverWindowLength;
-
         UNSAFE.putOrderedLong(this, END_SM_CHANGE_OFFSET, changeNumber);
-        timeOfLastStatusMessageScheduleNs = nowNs;
     }
 
     private void checkUntetheredSubscriptions(final long nowNs, final DriverConductor conductor)
