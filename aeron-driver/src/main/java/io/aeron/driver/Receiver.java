@@ -34,11 +34,15 @@ import static io.aeron.driver.status.SystemCounterDescriptor.BYTES_RECEIVED;
 import static io.aeron.driver.status.SystemCounterDescriptor.RESOLUTION_CHANGES;
 
 /**
- * Receiver agent for JVM based media driver, uses an event loop with command buffer
+ * Agent that receives messages streams and rebuilds {@link PublicationImage}s, plus iterates over them sending status
+ * and control messages back to the {@link Sender}.
  */
 public final class Receiver implements Agent
 {
     private static final PublicationImage[] EMPTY_IMAGES = new PublicationImage[0];
+
+    private final long reResolutionCheckIntervalNs;
+    private long reResolutionDeadlineNs;
     private final DataTransportPoller dataTransportPoller;
     private final OneToOneConcurrentArrayQueue<Runnable> commandQueue;
     private final AtomicCounter totalBytesReceived;
@@ -48,8 +52,6 @@ public final class Receiver implements Agent
     private PublicationImage[] publicationImages = EMPTY_IMAGES;
     private final ArrayList<PendingSetupMessageFromSource> pendingSetupMessages = new ArrayList<>();
     private final DriverConductorProxy conductorProxy;
-    private final long reResolutionCheckIntervalNs;
-    private long reResolutionDeadlineNs;
 
     Receiver(final MediaDriver.Context ctx)
     {
@@ -69,7 +71,7 @@ public final class Receiver implements Agent
     public void onStart()
     {
         final long nowNs = nanoClock.nanoTime();
-        this.cachedNanoClock.update(nowNs);
+        cachedNanoClock.update(nowNs);
         reResolutionDeadlineNs = nowNs + reResolutionCheckIntervalNs;
     }
 
@@ -106,7 +108,7 @@ public final class Receiver implements Agent
         for (int lastIndex = publicationImages.length - 1, i = lastIndex; i >= 0; i--)
         {
             final PublicationImage image = publicationImages[i];
-            if (image.hasActivityAndNotEndOfStream(nowNs))
+            if (image.isConnected(nowNs))
             {
                 workCount += image.sendPendingStatusMessage(nowNs);
                 workCount += image.processPendingLoss();
@@ -114,9 +116,10 @@ public final class Receiver implements Agent
             }
             else
             {
-                image.removeFromDispatcher();
                 this.publicationImages = 1 == this.publicationImages.length ?
                     EMPTY_IMAGES : ArrayUtil.remove(this.publicationImages, i);
+                image.removeFromDispatcher();
+                image.receiverRelease();
             }
         }
 
@@ -265,8 +268,10 @@ public final class Receiver implements Agent
     {
         final int transportIndex = channelEndpoint.hasDestinationControl() ? channelEndpoint.destination(channel) : 0;
 
-        for (final PendingSetupMessageFromSource pending : pendingSetupMessages)
+        for (int i = 0, size = pendingSetupMessages.size(); i < size; i++)
         {
+            final PendingSetupMessageFromSource pending = pendingSetupMessages.get(i);
+
             if (pending.channelEndpoint() == channelEndpoint &&
                 pending.isPeriodic() &&
                 pending.transportIndex() == transportIndex)
@@ -281,7 +286,6 @@ public final class Receiver implements Agent
 
     private void checkPendingSetupMessages(final long nowNs)
     {
-        final ArrayList<PendingSetupMessageFromSource> pendingSetupMessages = this.pendingSetupMessages;
         for (int lastIndex = pendingSetupMessages.size() - 1, i = lastIndex; i >= 0; i--)
         {
             final PendingSetupMessageFromSource pending = pendingSetupMessages.get(i);

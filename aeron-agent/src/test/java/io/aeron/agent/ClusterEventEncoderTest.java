@@ -56,18 +56,23 @@ class ClusterEventEncoderTest
     }
 
     @Test
+    @SuppressWarnings("MethodLength")
     void testEncodeNewLeadershipTerm()
     {
         final int offset = 200;
         final int captureLength = 18;
         final int length = 54;
         final long logLeadershipTermId = 111;
-        final long logTruncatePosition = 256;
+        final long nextLeadershipTermId = 2561;
+        final long nextTermBaseLogPosition = 2562;
+        final long nextLogPosition = 2563;
         final long leadershipTermId = 222;
         final long logPosition = 1024;
         final long timestamp = 32423436;
         final int leaderMemberId = 42;
         final int logSessionId = 18;
+        final long termBaseLogPosition = 23874;
+        final long leaderRecordingId = 9;
         final boolean isStartup = true;
 
         final int encodedLength = encodeNewLeadershipTerm(
@@ -76,9 +81,13 @@ class ClusterEventEncoderTest
             captureLength,
             length,
             logLeadershipTermId,
-            logTruncatePosition,
+            nextLeadershipTermId,
+            nextTermBaseLogPosition,
+            nextLogPosition,
             leadershipTermId,
+            termBaseLogPosition,
             logPosition,
+            leaderRecordingId,
             timestamp,
             leaderMemberId,
             logSessionId,
@@ -94,11 +103,19 @@ class ClusterEventEncoderTest
         relativeOffset += SIZE_OF_LONG;
         assertEquals(logLeadershipTermId, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
         relativeOffset += SIZE_OF_LONG;
-        assertEquals(logTruncatePosition, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
+        assertEquals(nextLeadershipTermId, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
+        relativeOffset += SIZE_OF_LONG;
+        assertEquals(nextTermBaseLogPosition, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
+        relativeOffset += SIZE_OF_LONG;
+        assertEquals(nextLogPosition, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
         relativeOffset += SIZE_OF_LONG;
         assertEquals(leadershipTermId, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
         relativeOffset += SIZE_OF_LONG;
+        assertEquals(termBaseLogPosition, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
+        relativeOffset += SIZE_OF_LONG;
         assertEquals(logPosition, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
+        relativeOffset += SIZE_OF_LONG;
+        assertEquals(leaderRecordingId, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
         relativeOffset += SIZE_OF_LONG;
         assertEquals(timestamp, buffer.getLong(offset + relativeOffset, LITTLE_ENDIAN));
         relativeOffset += SIZE_OF_LONG;
@@ -112,7 +129,7 @@ class ClusterEventEncoderTest
     @Test
     void testNewLeaderShipTermLength()
     {
-        assertEquals(SIZE_OF_LONG * 5 + SIZE_OF_INT * 3, newLeaderShipTermLength());
+        assertEquals(SIZE_OF_LONG * 9 + SIZE_OF_INT * 3, newLeaderShipTermLength());
     }
 
     @Test

@@ -52,7 +52,8 @@ class SenderRhsPadding extends SenderHotFields
 }
 
 /**
- * Agent that iterates over {@link NetworkPublication}s for sending them to registered subscribers.
+ * Agent that iterates over {@link NetworkPublication}s for sending them to {@link Receiver}s on behalf of registered
+ * subscribers.
  */
 public final class Sender extends SenderRhsPadding implements Agent
 {
@@ -89,7 +90,7 @@ public final class Sender extends SenderRhsPadding implements Agent
     public void onStart()
     {
         final long nowNs = nanoClock.nanoTime();
-        this.cachedNanoClock.update(nowNs);
+        cachedNanoClock.update(nowNs);
         reResolutionDeadlineNs = nowNs + reResolutionCheckIntervalNs;
     }
 

@@ -94,12 +94,7 @@ protected:
         aeron_system_counters_init(&resolver_fields->system_counters, &resolver_fields->counters);
 
         aeron_distinct_error_log_init(
-            &resolver_fields->error_log,
-            resolver_fields->error_log_buffer,
-            ERROR_LOG_LENGTH,
-            aeron_epoch_clock,
-            [](void *clientd, uint8_t *resource){},
-            nullptr);
+            &resolver_fields->error_log, resolver_fields->error_log_buffer, ERROR_LOG_LENGTH, aeron_epoch_clock);
 
         resolver_fields->context->counters_manager = &resolver_fields->counters;
         resolver_fields->context->system_counters = &resolver_fields->system_counters;
@@ -229,7 +224,7 @@ TEST_F(NameResolverTest, shouldUseStaticLookupTable)
 
     initResolver(&m_a, AERON_NAME_RESOLVER_CSV_TABLE, config_param, 0);
 
-    const char *resolved_name;
+    const char *resolved_name = nullptr;
 
     ASSERT_EQ(1, m_a.resolver.lookup_func(&m_a.resolver, NAME_0, AERON_UDP_CHANNEL_ENDPOINT_KEY, true, &resolved_name));
     ASSERT_STREQ(HOST_0A, resolved_name);
@@ -325,6 +320,9 @@ TEST_F(NameResolverTest, shouldSeeNeighborFromGossip)
     while (2 > readNeighborCounter(&m_a) || 2 > readNeighborCounter(&m_b) || 2 > readNeighborCounter(&m_c))
     {
         timestamp_ms += 1000;
+        aeron_clock_update_cached_epoch_time(m_a.context->cached_clock, timestamp_ms);
+        aeron_clock_update_cached_epoch_time(m_b.context->cached_clock, timestamp_ms);
+        aeron_clock_update_cached_epoch_time(m_c.context->cached_clock, timestamp_ms);
 
         int work_done;
         do
@@ -341,6 +339,10 @@ TEST_F(NameResolverTest, shouldSeeNeighborFromGossip)
 
             aeron_micro_sleep(10000);
             timestamp_ms += 10;
+
+            aeron_clock_update_cached_epoch_time(m_a.context->cached_clock, timestamp_ms);
+            aeron_clock_update_cached_epoch_time(m_b.context->cached_clock, timestamp_ms);
+            aeron_clock_update_cached_epoch_time(m_c.context->cached_clock, timestamp_ms);
         }
         while (0 != work_done);
 

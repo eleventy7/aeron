@@ -26,12 +26,8 @@ import io.aeron.exceptions.AeronException;
 import io.aeron.exceptions.TimeoutException;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.security.Authenticator;
-import org.agrona.CloseHelper;
-import org.agrona.LangUtil;
-import org.agrona.SemanticVersion;
-import org.agrona.collections.Int2ObjectHashMap;
-import org.agrona.collections.Long2ObjectHashMap;
-import org.agrona.collections.Object2ObjectHashMap;
+import org.agrona.*;
+import org.agrona.collections.*;
 import org.agrona.concurrent.*;
 import org.agrona.concurrent.status.CountersReader;
 
@@ -48,7 +44,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static io.aeron.Aeron.NULL_VALUE;
-import static io.aeron.CommonContext.SPY_PREFIX;
+import static io.aeron.CommonContext.*;
 import static io.aeron.archive.Archive.segmentFileName;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 import static io.aeron.archive.client.AeronArchive.segmentFileBasePosition;
@@ -84,11 +80,13 @@ abstract class ArchiveConductor
     private final Long2ObjectHashMap<RecordingSession> recordingSessionByIdMap = new Long2ObjectHashMap<>();
     private final Long2ObjectHashMap<ReplicationSession> replicationSessionByIdMap = new Long2ObjectHashMap<>();
     private final Int2ObjectHashMap<Counter> counterByIdMap = new Int2ObjectHashMap<>();
-    private final Object2ObjectHashMap<String, Subscription> recordingSubscriptionMap = new Object2ObjectHashMap<>();
+    private final Object2ObjectHashMap<String, Subscription> recordingSubscriptionByKeyMap =
+        new Object2ObjectHashMap<>();
     private final UnsafeBuffer descriptorBuffer = new UnsafeBuffer();
     private final RecordingDescriptorDecoder recordingDescriptorDecoder = new RecordingDescriptorDecoder();
     private final ControlResponseProxy controlResponseProxy = new ControlResponseProxy();
     private final UnsafeBuffer counterMetadataBuffer = new UnsafeBuffer(new byte[METADATA_LENGTH]);
+    private final Long2LongCounterMap subscriptionRefCountMap = new Long2LongCounterMap(0L);
 
     private final Aeron aeron;
     private final AgentInvoker aeronAgentInvoker;
@@ -104,8 +102,8 @@ abstract class ArchiveConductor
     private final Authenticator authenticator;
     private final ControlSessionProxy controlSessionProxy;
     final Archive.Context ctx;
-    SessionWorker<ReplaySession> replayer;
     SessionWorker<RecordingSession> recorder;
+    SessionWorker<ReplaySession> replayer;
 
     ArchiveConductor(final Archive.Context ctx)
     {
@@ -140,15 +138,10 @@ abstract class ArchiveConductor
         controlSessionProxy = new ControlSessionProxy(controlResponseProxy);
     }
 
-    Archive.Context context()
-    {
-        return ctx;
-    }
-
     public void onStart()
     {
-        replayer = newReplayer();
         recorder = newRecorder();
+        replayer = newReplayer();
     }
 
     public void onAvailableImage(final Image image)
@@ -174,17 +167,26 @@ abstract class ArchiveConductor
         }
     }
 
-    protected abstract SessionWorker<RecordingSession> newRecorder();
+    abstract SessionWorker<RecordingSession> newRecorder();
 
-    protected abstract SessionWorker<ReplaySession> newReplayer();
+    abstract SessionWorker<ReplaySession> newReplayer();
 
+    /**
+     * {@inheritDoc}
+     */
     protected final void preSessionsClose()
     {
         closeSessionWorkers();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     protected abstract void closeSessionWorkers();
 
+    /**
+     * {@inheritDoc}
+     */
     protected void postSessionsClose()
     {
         if (isAbort)
@@ -194,12 +196,11 @@ abstract class ArchiveConductor
         else
         {
             aeron.removeCloseHandler(closeHandlerRegistrationId);
+            aeron.removeUnavailableCounterHandler(unavailableCounterHandlerRegistrationId);
 
             if (!ctx.ownsAeronClient())
             {
-                aeron.removeUnavailableCounterHandler(unavailableCounterHandlerRegistrationId);
-
-                for (final Subscription subscription : recordingSubscriptionMap.values())
+                for (final Subscription subscription : recordingSubscriptionByKeyMap.values())
                 {
                     subscription.close();
                 }
@@ -210,23 +211,27 @@ abstract class ArchiveConductor
             }
         }
 
+        markFile.updateActivityTimestamp(NULL_VALUE);
         ctx.close();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     protected void abort()
     {
         try
         {
             isAbort = true;
 
-            if (null != replayer)
-            {
-                replayer.abort();
-            }
-
             if (null != recorder)
             {
                 recorder.abort();
+            }
+
+            if (null != replayer)
+            {
+                replayer.abort();
             }
 
             ctx.errorCounter().close();
@@ -241,6 +246,9 @@ abstract class ArchiveConductor
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public int doWork()
     {
         int workCount = 0;
@@ -258,8 +266,8 @@ abstract class ArchiveConductor
 
             if (nowMs >= markFileUpdateDeadlineMs)
             {
-                markFile.updateActivityTimestamp(nowMs);
                 markFileUpdateDeadlineMs = nowMs + MARK_FILE_UPDATE_INTERVAL_MS;
+                markFile.updateActivityTimestamp(nowMs);
             }
         }
 
@@ -267,6 +275,11 @@ abstract class ArchiveConductor
         workCount += runTasks(taskQueue);
 
         return workCount + super.doWork();
+    }
+
+    Archive.Context context()
+    {
+        return ctx;
     }
 
     final int invokeAeronInvoker()
@@ -318,11 +331,22 @@ abstract class ArchiveConductor
         final ControlSessionDemuxer demuxer)
     {
         final ChannelUri channelUri = ChannelUri.parse(channel);
-        final String controlChannel = strippedChannelBuilder(channelUri)
+
+        final String mtuStr = channelUri.get(CommonContext.MTU_LENGTH_PARAM_NAME);
+        final int mtuLength = null == mtuStr ?
+            ctx.controlMtuLength() : (int)SystemUtil.parseSize(MTU_LENGTH_PARAM_NAME, mtuStr);
+        final String termLengthStr = channelUri.get(TERM_LENGTH_PARAM_NAME);
+        final int termLength = null == termLengthStr ?
+            ctx.controlTermBufferLength() : (int)SystemUtil.parseSize(TERM_LENGTH_PARAM_NAME, termLengthStr);
+        final String isSparseStr = channelUri.get(SPARSE_PARAM_NAME);
+        final boolean isSparse = null == isSparseStr ?
+            ctx.controlTermBufferSparse() : Boolean.parseBoolean(isSparseStr);
+
+        final String responseChannel = strippedChannelBuilder(channelUri)
             .ttl(channelUri)
-            .sparse(ctx.controlTermBufferSparse())
-            .termLength(ctx.controlTermBufferLength())
-            .mtu(ctx.controlMtuLength())
+            .termLength(termLength)
+            .sparse(isSparse)
+            .mtu(mtuLength)
             .build();
 
         String invalidVersionMessage = null;
@@ -338,7 +362,7 @@ abstract class ArchiveConductor
             connectTimeoutMs,
             invalidVersionMessage,
             demuxer,
-            aeron.addExclusivePublication(controlChannel, streamId),
+            aeron.addExclusivePublication(responseChannel, streamId),
             this,
             cachedEpochClock,
             controlResponseProxy,
@@ -377,7 +401,7 @@ abstract class ArchiveConductor
         {
             final ChannelUri channelUri = ChannelUri.parse(originalChannel);
             final String key = makeKey(streamId, channelUri);
-            final Subscription oldSubscription = recordingSubscriptionMap.get(key);
+            final Subscription oldSubscription = recordingSubscriptionByKeyMap.get(key);
 
             if (null == oldSubscription)
             {
@@ -390,7 +414,8 @@ abstract class ArchiveConductor
 
                 final Subscription subscription = aeron.addSubscription(channel, streamId, handler, null);
 
-                recordingSubscriptionMap.put(key, subscription);
+                recordingSubscriptionByKeyMap.put(key, subscription);
+                subscriptionRefCountMap.incrementAndGet(subscription.registrationId());
                 controlSession.sendOkResponse(correlationId, subscription.registrationId(), controlResponseProxy);
             }
             else
@@ -412,11 +437,23 @@ abstract class ArchiveConductor
         try
         {
             final String key = makeKey(streamId, ChannelUri.parse(channel));
-            final Subscription subscription = recordingSubscriptionMap.remove(key);
+            final Subscription subscription = recordingSubscriptionByKeyMap.remove(key);
 
             if (null != subscription)
             {
-                subscription.close();
+                for (final RecordingSession session : recordingSessionByIdMap.values())
+                {
+                    if (subscription == session.subscription())
+                    {
+                        session.abort();
+                    }
+                }
+
+                if (0 == subscriptionRefCountMap.decrementAndGet(subscription.registrationId()))
+                {
+                    subscription.close();
+                }
+
                 controlSession.sendOkResponse(correlationId, controlResponseProxy);
             }
             else
@@ -435,10 +472,8 @@ abstract class ArchiveConductor
     void stopRecordingSubscription(
         final long correlationId, final long subscriptionId, final ControlSession controlSession)
     {
-        final Subscription subscription = removeRecordingSubscription(subscriptionId);
-        if (null != subscription)
+        if (stopRecordingSubscription(subscriptionId))
         {
-            CloseHelper.close(errorHandler, subscription);
             controlSession.sendOkResponse(correlationId, controlResponseProxy);
         }
         else
@@ -448,20 +483,28 @@ abstract class ArchiveConductor
         }
     }
 
-    Subscription removeRecordingSubscription(final long subscriptionId)
+    boolean stopRecordingSubscription(final long subscriptionId)
     {
-        final Iterator<Subscription> iter = recordingSubscriptionMap.values().iterator();
-        while (iter.hasNext())
+        final Subscription subscription = removeRecordingSubscription(subscriptionId);
+        if (null != subscription)
         {
-            final Subscription subscription = iter.next();
-            if (subscription.registrationId() == subscriptionId)
+            for (final RecordingSession session : recordingSessionByIdMap.values())
             {
-                iter.remove();
-                return subscription;
+                if (subscription == session.subscription())
+                {
+                    session.abort();
+                }
             }
+
+            if (0 == subscriptionRefCountMap.decrementAndGet(subscriptionId))
+            {
+                CloseHelper.close(errorHandler, subscription);
+            }
+
+            return true;
         }
 
-        return null;
+        return false;
     }
 
     void newListRecordingsSession(
@@ -570,6 +613,7 @@ abstract class ArchiveConductor
         final long length,
         final int replayStreamId,
         final String replayChannel,
+        final Counter limitPosition,
         final ControlSession controlSession)
     {
         if (replaySessionByIdMap.size() >= ctx.maxConcurrentReplays())
@@ -601,9 +645,15 @@ abstract class ArchiveConductor
 
         final ExclusivePublication replayPublication = newReplayPublication(
             correlationId, controlSession, replayChannel, replayStreamId, replayPosition, recordingSummary);
-
         final long replaySessionId = ((long)(replayId++) << 32) | (replayPublication.sessionId() & 0xFFFF_FFFFL);
-        final RecordingSession recordingSession = recordingSessionByIdMap.get(recordingId);
+
+        Counter replayLimitPosition = limitPosition;
+        if (null == replayLimitPosition)
+        {
+            final RecordingSession recordingSession = recordingSessionByIdMap.get(recordingId);
+            replayLimitPosition = null == recordingSession ? null : recordingSession.recordingPosition();
+        }
+
         final ReplaySession replaySession = new ReplaySession(
             replayPosition,
             length,
@@ -618,7 +668,7 @@ abstract class ArchiveConductor
             cachedEpochClock,
             replayPublication,
             recordingSummary,
-            null == recordingSession ? null : recordingSession.recordingPosition(),
+            replayLimitPosition,
             ctx.replayChecksum());
 
         replaySessionByIdMap.put(replaySessionId, replaySession);
@@ -635,57 +685,33 @@ abstract class ArchiveConductor
         final String replayChannel,
         final ControlSession controlSession)
     {
-        if (replaySessionByIdMap.size() >= ctx.maxConcurrentReplays())
+        Counter replayLimitCounter = counterByIdMap.get(limitCounterId);
+        if (null == replayLimitCounter)
         {
-            final String msg = "max concurrent replays reached " + ctx.maxConcurrentReplays();
-            controlSession.sendErrorResponse(correlationId, MAX_REPLAYS, msg, controlResponseProxy);
-            return;
-        }
-
-        if (!catalog.hasRecording(recordingId))
-        {
-            final String msg = "unknown recording id " + recordingId;
-            controlSession.sendErrorResponse(correlationId, UNKNOWN_RECORDING, msg, controlResponseProxy);
-            return;
-        }
-
-        catalog.recordingSummary(recordingId, recordingSummary);
-        long replayPosition = recordingSummary.startPosition;
-
-        if (NULL_POSITION != position)
-        {
-            if (isInvalidReplayPosition(correlationId, controlSession, recordingId, position, recordingSummary))
+            try
             {
+                replayLimitCounter = new Counter(aeron.countersReader(), NULL_VALUE, limitCounterId);
+            }
+            catch (final Throwable ex)
+            {
+                final String msg = "unable to create replay limit counter id= " + limitCounterId +
+                    " because of: " + ex.getMessage();
+                controlSession.sendErrorResponse(correlationId, GENERIC, msg, controlResponseProxy);
                 return;
             }
 
-            replayPosition = position;
+            counterByIdMap.put(limitCounterId, replayLimitCounter);
         }
 
-        final ExclusivePublication replayPublication = newReplayPublication(
-            correlationId, controlSession, replayChannel, replayStreamId, replayPosition, recordingSummary);
-        final Counter limitCounter = getOrAddCounter(limitCounterId);
-
-        final long replaySessionId = ((long)(replayId++) << 32) | (replayPublication.sessionId() & 0xFFFF_FFFFL);
-        final ReplaySession replaySession = new ReplaySession(
-            replayPosition,
-            length,
-            replaySessionId,
-            connectTimeoutMs,
+        startReplay(
             correlationId,
-            controlSession,
-            controlResponseProxy,
-            ctx.replayBuffer(),
-            catalog,
-            archiveDir,
-            cachedEpochClock,
-            replayPublication,
-            recordingSummary,
-            limitCounter,
-            ctx.replayChecksum());
-
-        replaySessionByIdMap.put(replaySessionId, replaySession);
-        replayer.addSession(replaySession);
+            recordingId,
+            position,
+            length,
+            replayStreamId,
+            replayChannel,
+            replayLimitCounter,
+            controlSession);
     }
 
     void stopReplay(final long correlationId, final long replaySessionId, final ControlSession controlSession)
@@ -764,7 +790,7 @@ abstract class ArchiveConductor
         {
             final ChannelUri channelUri = ChannelUri.parse(originalChannel);
             final String key = makeKey(streamId, channelUri);
-            final Subscription oldSubscription = recordingSubscriptionMap.get(key);
+            final Subscription oldSubscription = recordingSubscriptionByKeyMap.get(key);
 
             if (null == oldSubscription)
             {
@@ -777,7 +803,8 @@ abstract class ArchiveConductor
 
                 final Subscription subscription = aeron.addSubscription(channel, streamId, handler, null);
 
-                recordingSubscriptionMap.put(key, subscription);
+                recordingSubscriptionByKeyMap.put(key, subscription);
+                subscriptionRefCountMap.incrementAndGet(subscription.registrationId());
                 controlSession.sendOkResponse(correlationId, subscription.registrationId(), controlResponseProxy);
 
                 return subscription;
@@ -927,14 +954,14 @@ abstract class ArchiveConductor
             final String msg = "active listing already in progress";
             controlSession.sendErrorResponse(correlationId, ACTIVE_LISTING, msg, controlResponseProxy);
         }
-        else if (pseudoIndex < 0 || pseudoIndex >= recordingSubscriptionMap.size() || subscriptionCount <= 0)
+        else if (pseudoIndex < 0 || pseudoIndex >= recordingSubscriptionByKeyMap.size() || subscriptionCount <= 0)
         {
             controlSession.sendSubscriptionUnknown(correlationId, controlResponseProxy);
         }
         else
         {
             final ListRecordingSubscriptionsSession session = new ListRecordingSubscriptionsSession(
-                recordingSubscriptionMap,
+                recordingSubscriptionByKeyMap,
                 pseudoIndex,
                 subscriptionCount,
                 streamId,
@@ -957,12 +984,23 @@ abstract class ArchiveConductor
 
             if (null != recordingSession)
             {
+                recordingSession.abort();
+
                 final long subscriptionId = recordingSession.subscription().registrationId();
                 final Subscription subscription = removeRecordingSubscription(subscriptionId);
+
                 if (null != subscription)
                 {
                     found = 1;
-                    CloseHelper.close(errorHandler, subscription);
+
+                    for (final RecordingSession session : recordingSessionByIdMap.values())
+                    {
+                        if (subscription == session.subscription())
+                        {
+                            session.abort();
+                        }
+                    }
+                    subscriptionRefCountMap.decrementAndGet(subscriptionId);
                 }
             }
 
@@ -972,39 +1010,57 @@ abstract class ArchiveConductor
 
     void closeRecordingSession(final RecordingSession session)
     {
-        final long recordingId = session.sessionId();
-        recordingSessionByIdMap.remove(recordingId);
-
         if (isAbort)
         {
             session.abortClose();
         }
         else
         {
+            final Subscription subscription = session.subscription();
             final long position = session.recordedPosition();
-            catalog.recordingStopped(recordingId, position, epochClock.time());
+            final long recordingId = session.sessionId();
+            final long subscriptionId = subscription.registrationId();
 
-            session.sendPendingError(controlResponseProxy);
-            session.controlSession().attemptSignal(
-                session.correlationId(),
-                recordingId,
-                session.subscription().registrationId(),
-                position,
-                RecordingSignal.STOP);
+            try
+            {
+                recordingSessionByIdMap.remove(recordingId);
+                catalog.recordingStopped(recordingId, position, epochClock.time());
+                session.sendPendingError(controlResponseProxy);
+                session.controlSession().attemptSignal(
+                    session.correlationId(),
+                    recordingId,
+                    subscriptionId,
+                    position,
+                    RecordingSignal.STOP);
+            }
+            catch (final Throwable ex)
+            {
+                errorHandler.onError(ex);
+            }
 
+            if (0 == subscriptionRefCountMap.decrementAndGet(subscriptionId) || session.isAutoStop())
+            {
+                closeAndRemoveRecordingSubscription(subscription);
+            }
             closeSession(session);
         }
     }
 
     void closeReplaySession(final ReplaySession session)
     {
-        replaySessionByIdMap.remove(session.sessionId());
-
         if (!isAbort)
         {
-            session.sendPendingError(controlResponseProxy);
+            try
+            {
+                session.sendPendingError(controlResponseProxy);
+            }
+            catch (final Throwable ex)
+            {
+                errorHandler.onError(ex);
+            }
         }
 
+        replaySessionByIdMap.remove(session.sessionId());
         closeSession(session);
     }
 
@@ -1012,11 +1068,13 @@ abstract class ArchiveConductor
         final long correlationId,
         final long srcRecordingId,
         final long dstRecordingId,
+        final long stopPosition,
         final long channelTagId,
         final long subscriptionTagId,
         final int srcControlStreamId,
         final String srcControlChannel,
         final String liveDestination,
+        final String replicationChannel,
         final ControlSession controlSession)
     {
         final boolean hasRecording = catalog.hasRecording(dstRecordingId);
@@ -1036,15 +1094,16 @@ abstract class ArchiveConductor
             .controlRequestChannel(srcControlChannel)
             .controlRequestStreamId(srcControlStreamId);
 
-        final long replicationId = aeron.nextCorrelationId();
+        final long replicationId = nextSessionId++;
         final ReplicationSession replicationSession = new ReplicationSession(
             srcRecordingId,
             dstRecordingId,
             channelTagId,
             subscriptionTagId,
             replicationId,
+            stopPosition,
             liveDestination,
-            ctx.replicationChannel(),
+            Strings.isEmpty(replicationChannel) ? ctx.replicationChannel() : replicationChannel,
             hasRecording ? recordingSummary : null,
             remoteArchiveContext,
             cachedEpochClock,
@@ -1064,7 +1123,7 @@ abstract class ArchiveConductor
         if (null == session)
         {
             final String msg = "unknown replication id " + replicationId;
-            controlSession.sendErrorResponse(correlationId, replicationId, msg, controlResponseProxy);
+            controlSession.sendErrorResponse(correlationId, UNKNOWN_REPLICATION, msg, controlResponseProxy);
         }
         else
         {
@@ -1370,7 +1429,7 @@ abstract class ArchiveConductor
         while (null != (runnable = taskQueue.pollFirst()))
         {
             runnable.run();
-            workCount += 1;
+            workCount++;
         }
 
         return workCount;
@@ -1387,9 +1446,13 @@ abstract class ArchiveConductor
             .tags(channelUri)
             .rejoin(channelUri)
             .group(channelUri)
-            .congestionControl(channelUri)
+            .tether(channelUri)
             .flowControl(channelUri)
             .groupTag(channelUri)
+            .congestionControl(channelUri)
+            .socketRcvbufLength(channelUri)
+            .socketSndbufLength(channelUri)
+            .receiverWindowLength(channelUri)
             .alias(channelUri);
 
         final String sessionIdStr = channelUri.get(CommonContext.SESSION_ID_PARAM_NAME);
@@ -1514,6 +1577,7 @@ abstract class ArchiveConductor
             controlSession,
             autoStop);
 
+        subscriptionRefCountMap.incrementAndGet(image.subscription().registrationId());
         recordingSessionByIdMap.put(recordingId, session);
         recorder.addSession(session);
 
@@ -1534,11 +1598,12 @@ abstract class ArchiveConductor
         final Image image,
         final boolean autoStop)
     {
+        final long subscriptionId = image.subscription().registrationId();
         try
         {
             if (recordingSessionByIdMap.containsKey(recordingId))
             {
-                final String msg = "cannot extend active recording for " + recordingId;
+                final String msg = "cannot extend active recording " + recordingId;
                 controlSession.attemptErrorResponse(correlationId, ACTIVE_RECORDING, msg, controlResponseProxy);
                 throw new ArchiveException(msg);
             }
@@ -1570,26 +1635,38 @@ abstract class ArchiveConductor
                 controlSession,
                 autoStop);
 
+            subscriptionRefCountMap.incrementAndGet(subscriptionId);
             recordingSessionByIdMap.put(recordingId, session);
             catalog.extendRecording(recordingId, controlSession.sessionId(), correlationId, image.sessionId());
             recorder.addSession(session);
 
             controlSession.attemptSignal(
-                correlationId,
-                recordingId,
-                image.subscription().registrationId(),
-                image.joinPosition(),
-                RecordingSignal.EXTEND);
+                correlationId, recordingId, subscriptionId, image.joinPosition(), RecordingSignal.EXTEND);
         }
         catch (final Exception ex)
         {
             errorHandler.onError(ex);
             if (autoStop)
             {
-                removeRecordingSubscription(image.subscription().registrationId());
-                CloseHelper.close(errorHandler, image.subscription());
+                closeAndRemoveRecordingSubscription(image.subscription());
             }
         }
+    }
+
+    private Subscription removeRecordingSubscription(final long subscriptionId)
+    {
+        final Iterator<Subscription> iter = recordingSubscriptionByKeyMap.values().iterator();
+        while (iter.hasNext())
+        {
+            final Subscription subscription = iter.next();
+            if (subscription.registrationId() == subscriptionId)
+            {
+                iter.remove();
+                return subscription;
+            }
+        }
+
+        return null;
     }
 
     private ExclusivePublication newReplayPublication(
@@ -1632,8 +1709,7 @@ abstract class ArchiveConductor
         if (image.joinPosition() != recordingSummary.stopPosition)
         {
             final String msg = "cannot extend recording " + recordingSummary.recordingId +
-                " image joinPosition=" + image.joinPosition() +
-                " not equal to stopPosition=" + recordingSummary.stopPosition;
+                " image joinPosition=" + image.joinPosition() + " != stopPosition=" + recordingSummary.stopPosition;
             controlSession.attemptErrorResponse(correlationId, INVALID_EXTENSION, msg, controlResponseProxy);
             throw new ArchiveException(msg);
         }
@@ -1641,8 +1717,7 @@ abstract class ArchiveConductor
         if (image.initialTermId() != recordingSummary.initialTermId)
         {
             final String msg = "cannot extend recording " + recordingSummary.recordingId +
-                " image initialTermId=" + image.initialTermId() +
-                " not equal to recording initialTermId=" + recordingSummary.initialTermId;
+                " image initialTermId=" + image.initialTermId() + " != initialTermId=" + recordingSummary.initialTermId;
             controlSession.attemptErrorResponse(correlationId, INVALID_EXTENSION, msg, controlResponseProxy);
             throw new ArchiveException(msg);
         }
@@ -1651,7 +1726,7 @@ abstract class ArchiveConductor
         {
             final String msg = "cannot extend recording " + recordingSummary.recordingId +
                 " image termBufferLength=" + image.termBufferLength() +
-                " not equal to recording termBufferLength=" + recordingSummary.termBufferLength;
+                " != termBufferLength=" + recordingSummary.termBufferLength;
             controlSession.attemptErrorResponse(correlationId, INVALID_EXTENSION, msg, controlResponseProxy);
             throw new ArchiveException(msg);
         }
@@ -1659,8 +1734,7 @@ abstract class ArchiveConductor
         if (image.mtuLength() != recordingSummary.mtuLength)
         {
             final String msg = "cannot extend recording " + recordingSummary.recordingId +
-                " image mtuLength=" + image.mtuLength() +
-                " not equal to recording mtuLength=" + recordingSummary.mtuLength;
+                " image mtuLength=" + image.mtuLength() + " != mtuLength=" + recordingSummary.mtuLength;
             controlSession.attemptErrorResponse(correlationId, INVALID_EXTENSION, msg, controlResponseProxy);
             throw new ArchiveException(msg);
         }
@@ -1693,9 +1767,7 @@ abstract class ArchiveConductor
         if (position < startPosition || position > stopPosition || ((position & (FRAME_ALIGNMENT - 1)) != 0))
         {
             final String msg = "invalid position " + position +
-                ": start=" + startPosition +
-                " stop=" + stopPosition +
-                " alignment=" + FRAME_ALIGNMENT;
+                ": start=" + startPosition + " stop=" + stopPosition + " alignment=" + FRAME_ALIGNMENT;
             controlSession.sendErrorResponse(correlationId, msg, controlResponseProxy);
             return false;
         }
@@ -1842,7 +1914,7 @@ abstract class ArchiveConductor
         final long srcStopPosition = recordingSummary.stopPosition;
         if (NULL_POSITION == srcStopPosition)
         {
-            final String msg = "source recording still active " + srcRecordingId;
+            final String msg = "source recording " + srcRecordingId + " still active";
             controlSession.sendErrorResponse(correlationId, msg, controlResponseProxy);
             return false;
         }
@@ -1885,8 +1957,7 @@ abstract class ArchiveConductor
         final int srcStreamId = recordingSummary.streamId;
         if (dstStreamId != srcStreamId)
         {
-            final String msg = "invalid migrate: srcStreamId=" + srcStreamId +
-                " dstStreamId=" + dstStreamId;
+            final String msg = "invalid migrate: srcStreamId=" + srcStreamId + " dstStreamId=" + dstStreamId;
             controlSession.sendErrorResponse(correlationId, msg, controlResponseProxy);
             return false;
         }
@@ -1939,17 +2010,21 @@ abstract class ArchiveConductor
         return true;
     }
 
-    private Counter getOrAddCounter(final int counterId)
+    private void closeAndRemoveRecordingSubscription(final Subscription subscription)
     {
-        Counter counter = counterByIdMap.get(counterId);
+        final long subscriptionId = subscription.registrationId();
+        subscriptionRefCountMap.remove(subscriptionId);
 
-        if (null == counter)
+        for (final RecordingSession session : recordingSessionByIdMap.values())
         {
-            counter = new Counter(aeron.countersReader(), NULL_VALUE, counterId);
-            counterByIdMap.put(counterId, counter);
+            if (subscription == session.subscription())
+            {
+                session.abort();
+            }
         }
 
-        return counter;
+        removeRecordingSubscription(subscriptionId);
+        CloseHelper.close(errorHandler, subscription);
     }
 
     private boolean isLowStorageSpace(final long correlationId, final ControlSession controlSession)

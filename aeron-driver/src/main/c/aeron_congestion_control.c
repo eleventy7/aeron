@@ -28,15 +28,15 @@
 #include "aeron_alloc.h"
 #include "aeron_driver_context.h"
 #include "aeron_position.h"
+#include "media/aeron_udp_channel.h"
 
 #define AERON_CUBICCONGESTIONCONTROL_INITIALRTT_DEFAULT (100 * 1000LL)
-#define AERON_CUBICCONGESTIONCONTROL_RTT_MEASUREMENT_TIMEOUT_NS (10 * 1000 * 1000LL)
 #define AERON_CUBICCONGESTIONCONTROL_SECOND_IN_NS (1 * 1000 * 1000 * 1000LL)
-#define AERON_CUBICCONGESTIONCONTROL_RTT_MAX_TIMEOUT_NS (AERON_CUBICCONGESTIONCONTROL_SECOND_IN_NS)
-#define AERON_CUBICCONGESTIONCONTROL_MAX_OUTSTANDING_RTT_MEASUREMENTS (1)
 
+#define AERON_CUBICCONGESTIONCONTROL_INITCWND (10)
 #define AERON_CUBICCONGESTIONCONTROL_C (0.4)
 #define AERON_CUBICCONGESTIONCONTROL_B (0.2)
+#define AERON_CUBICCONGESTIONCONTROL_RTT_TIMEOUT_MULTIPLE (4)
 
 aeron_congestion_control_strategy_supplier_func_t aeron_congestion_control_strategy_supplier_load(
     const char *strategy_name)
@@ -111,8 +111,7 @@ int aeron_congestion_control_strategy_fini(aeron_congestion_control_strategy_t *
 
 int aeron_static_window_congestion_control_strategy_supplier(
     aeron_congestion_control_strategy_t **strategy,
-    size_t channel_length,
-    const char *channel,
+    aeron_udp_channel_t *channel,
     int32_t stream_id,
     int32_t session_id,
     int64_t registration_id,
@@ -139,7 +138,8 @@ int aeron_static_window_congestion_control_strategy_supplier(
     _strategy->fini = aeron_congestion_control_strategy_fini;
 
     aeron_static_window_congestion_control_strategy_state_t *state = _strategy->state;
-    const int32_t initial_window_length = (int32_t)context->initial_window_length;
+    const int32_t initial_window_length = (int32_t)aeron_udp_channel_receiver_window(
+        channel, context->initial_window_length);
     const int32_t max_window_for_term = term_length / 2;
 
     state->window_length = max_window_for_term < initial_window_length ? max_window_for_term : initial_window_length;
@@ -151,8 +151,7 @@ int aeron_static_window_congestion_control_strategy_supplier(
 
 int aeron_congestion_control_default_strategy_supplier(
     aeron_congestion_control_strategy_t **strategy,
-    size_t channel_length,
-    const char *channel,
+    aeron_udp_channel_t *channel,
     int32_t stream_id,
     int32_t session_id,
     int64_t registration_id,
@@ -163,15 +162,7 @@ int aeron_congestion_control_default_strategy_supplier(
     aeron_driver_context_t *context,
     aeron_counters_manager_t *counters_manager)
 {
-    aeron_uri_t channel_uri;
-
-    if (aeron_uri_parse(channel_length, channel, &channel_uri) < 0)
-    {
-        aeron_uri_close(&channel_uri);
-        return -1;
-    }
-
-    const char *cc_str = aeron_uri_find_param_value(&channel_uri.params.udp.additional_params, AERON_URI_CC_KEY);
+    const char *cc_str = aeron_uri_find_param_value(&channel->uri.params.udp.additional_params, AERON_URI_CC_KEY);
     size_t scc_length = sizeof(AERON_STATICWINDOWCONGESTIONCONTROL_CC_PARAM_VALUE) + 1;
     size_t ccc_length = sizeof(AERON_CUBICCONGESTIONCONTROL_CC_PARAM_VALUE) + 1;
     int result = -1;
@@ -180,7 +171,6 @@ int aeron_congestion_control_default_strategy_supplier(
     {
         result = aeron_static_window_congestion_control_strategy_supplier(
             strategy,
-            channel_length,
             channel,
             stream_id,
             session_id,
@@ -196,7 +186,6 @@ int aeron_congestion_control_default_strategy_supplier(
     {
         result = aeron_cubic_congestion_control_strategy_supplier(
             strategy,
-            channel_length,
             channel,
             stream_id,
             session_id,
@@ -209,7 +198,6 @@ int aeron_congestion_control_default_strategy_supplier(
             counters_manager);
     }
 
-    aeron_uri_close(&channel_uri);
     return result;
 }
 
@@ -218,7 +206,7 @@ typedef struct aeron_cubic_congestion_control_strategy_state_stct
     bool tcp_mode;
     bool measure_rtt;
 
-    int32_t min_window;
+    int32_t initial_window_length;
     int32_t mtu;
     int32_t max_cwnd;
     int32_t cwnd;
@@ -228,6 +216,7 @@ typedef struct aeron_cubic_congestion_control_strategy_state_stct
     int32_t outstanding_rtt_measurements;
     uint64_t initial_rtt_ns;
     int64_t rtt_ns;
+    int64_t rtt_timeout_ns;
     int64_t window_update_timeout_ns;
     int64_t last_loss_timestamp_ns;
     int64_t last_update_timestamp_ns;
@@ -244,17 +233,15 @@ bool aeron_cubic_congestion_control_strategy_should_measure_rtt(void *state, int
         (aeron_cubic_congestion_control_strategy_state_t *)state;
 
     return cubic_state->measure_rtt &&
-        cubic_state->outstanding_rtt_measurements < AERON_CUBICCONGESTIONCONTROL_MAX_OUTSTANDING_RTT_MEASUREMENTS &&
-        (((cubic_state->last_rtt_timestamp_ns + AERON_CUBICCONGESTIONCONTROL_RTT_MAX_TIMEOUT_NS) - now_ns < 0) ||
-        ((cubic_state->last_rtt_timestamp_ns + AERON_CUBICCONGESTIONCONTROL_RTT_MEASUREMENT_TIMEOUT_NS) - now_ns < 0));
+        ((cubic_state->last_rtt_timestamp_ns + cubic_state->rtt_timeout_ns) - now_ns < 0);
 }
 
 void aeron_cubic_congestion_control_strategy_on_rttm_sent(void *state, int64_t now_ns)
 {
     aeron_cubic_congestion_control_strategy_state_t *cubic_state =
         (aeron_cubic_congestion_control_strategy_state_t *)state;
+
     cubic_state->last_rtt_timestamp_ns = now_ns;
-    cubic_state->outstanding_rtt_measurements++;
 }
 
 void aeron_cubic_congestion_control_strategy_on_rttm(
@@ -262,10 +249,13 @@ void aeron_cubic_congestion_control_strategy_on_rttm(
 {
     aeron_cubic_congestion_control_strategy_state_t *cubic_state =
         (aeron_cubic_congestion_control_strategy_state_t *)state;
-    cubic_state->outstanding_rtt_measurements--;
+
     cubic_state->last_rtt_timestamp_ns = now_ns;
     cubic_state->rtt_ns = rtt_ns;
     aeron_counter_set_ordered(cubic_state->rtt_indicator, rtt_ns);
+    cubic_state->rtt_timeout_ns =
+        (rtt_ns > (int64_t)cubic_state->initial_rtt_ns ? rtt_ns : (int64_t)cubic_state->initial_rtt_ns) *
+        AERON_CUBICCONGESTIONCONTROL_RTT_TIMEOUT_MULTIPLE;
 }
 
 int32_t aeron_cubic_congestion_control_strategy_on_track_rebuild(
@@ -331,13 +321,12 @@ int32_t aeron_cubic_congestion_control_strategy_on_track_rebuild(
 
 int32_t aeron_cubic_congestion_control_strategy_initial_window_length(void *state)
 {
-    return ((aeron_cubic_congestion_control_strategy_state_t *)state)->min_window;
+    return ((aeron_cubic_congestion_control_strategy_state_t *)state)->initial_window_length;
 }
 
 int aeron_cubic_congestion_control_strategy_supplier(
     aeron_congestion_control_strategy_t **strategy,
-    size_t channel_length,
-    const char *channel,
+    aeron_udp_channel_t *channel,
     int32_t stream_id,
     int32_t session_id,
     int64_t registration_id,
@@ -384,14 +373,17 @@ int aeron_cubic_congestion_control_strategy_supplier(
     }
 
     state->mtu = sender_mtu_length;
-    state->min_window = sender_mtu_length;
-    const int32_t initial_window_length = (int32_t)context->initial_window_length;
+    const int32_t initial_window_length = (int32_t)aeron_udp_channel_receiver_window(
+        channel, context->initial_window_length);
     const int32_t max_window_for_term = term_length / 2;
     const int32_t max_window = max_window_for_term < initial_window_length ?
         max_window_for_term : initial_window_length;
 
     state->max_cwnd = max_window / sender_mtu_length;
-    state->cwnd = 1;
+    state->cwnd = state->max_cwnd > AERON_CUBICCONGESTIONCONTROL_INITCWND ?
+        AERON_CUBICCONGESTIONCONTROL_INITCWND : state->max_cwnd;
+    state->initial_window_length = state->cwnd * sender_mtu_length;
+
     // initially set w_max to max window and act in the TCP and concave region initially
     state->w_max = state->max_cwnd;
     state->k = cbrt((double)state->w_max * AERON_CUBICCONGESTIONCONTROL_B / AERON_CUBICCONGESTIONCONTROL_C);
@@ -399,6 +391,7 @@ int aeron_cubic_congestion_control_strategy_supplier(
     // determine interval for adjustment based on heuristic of MTU, max window, and/or RTT estimate
     state->rtt_ns = state->initial_rtt_ns;
     state->window_update_timeout_ns = state->rtt_ns;
+    state->rtt_timeout_ns = state->rtt_ns * AERON_CUBICCONGESTIONCONTROL_RTT_TIMEOUT_MULTIPLE;
 
     const int32_t rtt_indicator_counter_id = aeron_stream_counter_allocate(
         counters_manager,
@@ -407,8 +400,8 @@ int aeron_cubic_congestion_control_strategy_supplier(
         registration_id,
         session_id,
         stream_id,
-        channel_length,
-        channel,
+        channel->uri_length,
+        channel->original_uri,
         "");
     if (rtt_indicator_counter_id < 0)
     {
@@ -422,8 +415,8 @@ int aeron_cubic_congestion_control_strategy_supplier(
         registration_id,
         session_id,
         stream_id,
-        channel_length,
-        channel,
+        channel->uri_length,
+        channel->original_uri,
         "");
     if (window_indicator_counter_id < 0)
     {
@@ -435,7 +428,7 @@ int aeron_cubic_congestion_control_strategy_supplier(
     aeron_counter_set_ordered(state->rtt_indicator, 0);
 
     state->window_indicator = aeron_counters_manager_addr(counters_manager, window_indicator_counter_id);
-    aeron_counter_set_ordered(state->window_indicator, state->min_window);
+    aeron_counter_set_ordered(state->window_indicator, state->initial_window_length);
 
     state->last_rtt_timestamp_ns = 0;
     state->outstanding_rtt_measurements = 0;
@@ -449,4 +442,11 @@ int aeron_cubic_congestion_control_strategy_supplier(
 error_cleanup:
     aeron_congestion_control_strategy_fini(_strategy);
     return -1;
+}
+
+int32_t aeron_cubic_congestion_control_strategy_get_max_cwnd(void *state)
+{
+    aeron_cubic_congestion_control_strategy_state_t *cubic_state =
+        (aeron_cubic_congestion_control_strategy_state_t *)state;
+    return cubic_state->max_cwnd;
 }

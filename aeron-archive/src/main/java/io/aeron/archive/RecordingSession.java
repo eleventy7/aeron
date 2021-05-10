@@ -28,16 +28,17 @@ import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
  */
 class RecordingSession implements Session
 {
-    private enum State
+    enum State
     {
         INIT, RECORDING, INACTIVE, STOPPED
     }
 
+    private final boolean isAutoStop;
+    private volatile boolean isAborted = false;
     private final long correlationId;
     private final long recordingId;
     private long progressEventPosition;
     private final int blockLengthLimit;
-    private final boolean autoStop;
     private final RecordingEventsProxy recordingEventsProxy;
     private final Image image;
     private final Counter position;
@@ -60,7 +61,7 @@ class RecordingSession implements Session
         final Counter position,
         final Archive.Context ctx,
         final ControlSession controlSession,
-        final boolean autoStop)
+        final boolean isAutoStop)
     {
         this.correlationId = correlationId;
         this.recordingId = recordingId;
@@ -69,69 +70,58 @@ class RecordingSession implements Session
         this.image = image;
         this.position = position;
         this.controlSession = controlSession;
-        this.autoStop = autoStop;
-        countedErrorHandler = ctx.countedErrorHandler();
-        progressEventPosition = image.joinPosition();
+        this.isAutoStop = isAutoStop;
+        this.countedErrorHandler = ctx.countedErrorHandler();
+        this.progressEventPosition = image.joinPosition();
 
         blockLengthLimit = Math.min(image.termBufferLength(), ctx.fileIoMaxLength());
         recordingWriter = new RecordingWriter(recordingId, startPosition, segmentLength, image, ctx);
     }
 
-    public long correlationId()
-    {
-        return correlationId;
-    }
-
+    /**
+     * {@inheritDoc}
+     */
     public long sessionId()
     {
         return recordingId;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public boolean isDone()
     {
         return state == State.STOPPED;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void abort()
     {
-        state(State.INACTIVE);
+        isAborted = true;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void close()
     {
-        if (autoStop)
-        {
-            final Subscription subscription = image.subscription();
-            CloseHelper.close(countedErrorHandler, subscription);
-            controlSession.archiveConductor().removeRecordingSubscription(subscription.registrationId());
-        }
         recordingWriter.close();
         CloseHelper.close(countedErrorHandler, position);
     }
 
-    public void abortClose()
-    {
-        recordingWriter.close();
-    }
-
-    public Counter recordingPosition()
-    {
-        return position;
-    }
-
-    public long recordedPosition()
-    {
-        if (position.isClosed())
-        {
-            return NULL_POSITION;
-        }
-
-        return position.get();
-    }
-
+    /**
+     * {@inheritDoc}
+     */
     public int doWork()
     {
         int workCount = 0;
+
+        if (isAborted)
+        {
+            state = State.INACTIVE;
+        }
 
         if (State.INIT == state)
         {
@@ -145,18 +135,42 @@ class RecordingSession implements Session
 
         if (State.INACTIVE == state)
         {
+            recordingWriter.close();
             state(State.STOPPED);
+            workCount++;
 
             if (null != recordingEventsProxy)
             {
                 recordingEventsProxy.stopped(recordingId, image.joinPosition(), position.getWeak());
             }
-
-            recordingWriter.close();
-            workCount += 1;
         }
 
         return workCount;
+    }
+
+    void abortClose()
+    {
+        recordingWriter.close();
+    }
+
+    long correlationId()
+    {
+        return correlationId;
+    }
+
+    Counter recordingPosition()
+    {
+        return position;
+    }
+
+    long recordedPosition()
+    {
+        if (position.isClosed())
+        {
+            return NULL_POSITION;
+        }
+
+        return position.get();
     }
 
     Subscription subscription()
@@ -167,6 +181,11 @@ class RecordingSession implements Session
     ControlSession controlSession()
     {
         return controlSession;
+    }
+
+    boolean isAutoStop()
+    {
+        return isAutoStop;
     }
 
     void sendPendingError(final ControlResponseProxy controlResponseProxy)
@@ -237,17 +256,19 @@ class RecordingSession implements Session
         }
         catch (final ArchiveException ex)
         {
+            countedErrorHandler.onError(ex);
             errorMessage = ex.getMessage();
             errorCode = ex.errorCode();
             state(State.INACTIVE);
-            throw ex;
         }
         catch (final Throwable ex)
         {
+            countedErrorHandler.onError(ex);
             errorMessage = ex.getClass().getName() + ": " + ex.getMessage();
             state(State.INACTIVE);
-            throw ex;
         }
+
+        return 1;
     }
 
     private void state(final State newState)

@@ -70,6 +70,7 @@ public class StartFromTruncatedRecordingLogTest
 
     private static final String CLUSTER_MEMBERS = clusterMembersString();
     private static final String LOG_CHANNEL = "aeron:udp?term-length=256k";
+    private static final String REPLICATION_CHANNEL = "aeron:udp?endpoint=localhost:0";
     private static final String ARCHIVE_CONTROL_REQUEST_CHANNEL = "aeron:udp?term-length=64k|endpoint=localhost:801";
     private static final String LOCAL_ARCHIVE_CONTROL_CHANNEL = "aeron:ipc?term-length=64k";
 
@@ -215,7 +216,6 @@ public class StartFromTruncatedRecordingLogTest
         awaitSnapshotCount(1);
         awaitNeutralControlToggle(leaderMemberId);
 
-        terminateCount.set(0);
         shutdown(leaderMemberId);
         awaitSnapshotCount(2);
         Tests.awaitValue(terminateCount, MEMBER_COUNT);
@@ -339,7 +339,6 @@ public class StartFromTruncatedRecordingLogTest
         final AeronArchive.Context archiveCtx = new AeronArchive.Context()
             .lock(NoOpLock.INSTANCE)
             .controlRequestChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
-            .controlRequestStreamId(AeronArchive.Configuration.localControlStreamId())
             .controlResponseChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
             .aeronDirectoryName(baseDirName);
 
@@ -357,7 +356,6 @@ public class StartFromTruncatedRecordingLogTest
                 .archiveDir(new File(baseDirName, "archive"))
                 .controlChannel(ARCHIVE_CONTROL_REQUEST_CHANNEL + index)
                 .localControlChannel(LOCAL_ARCHIVE_CONTROL_CHANNEL)
-                .localControlStreamId(archiveCtx.controlRequestStreamId())
                 .recordingEventsEnabled(false)
                 .threadingMode(ArchiveThreadingMode.SHARED)
                 .errorHandler(ClusterTests.errorHandler(index))
@@ -372,6 +370,7 @@ public class StartFromTruncatedRecordingLogTest
                 .clusterDir(new File(baseDirName, "consensus-module"))
                 .ingressChannel("aeron:udp?term-length=64k")
                 .logChannel(LOG_CHANNEL)
+                .replicationChannel(REPLICATION_CHANNEL)
                 .archiveContext(archiveCtx.clone())
                 .deleteDirOnStart(cleanStart));
 
@@ -392,7 +391,10 @@ public class StartFromTruncatedRecordingLogTest
             containers[i] = null;
             clusteredMediaDrivers[i].close();
             clusteredMediaDrivers[i] = null;
+            snapshotCounters[i].set(0);
         }
+
+        terminateCount.set(0);
     }
 
     private void connectClient()
@@ -485,7 +487,7 @@ public class StartFromTruncatedRecordingLogTest
                 .append("localhost:2011").append(i).append(',')
                 .append("localhost:2022").append(i).append(',')
                 .append("localhost:2033").append(i).append(',')
-                .append("localhost:2044").append(i).append(',')
+                .append("localhost:0,")
                 .append("localhost:801").append(i).append('|');
         }
 

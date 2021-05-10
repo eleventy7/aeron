@@ -27,6 +27,7 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver.Context;
 import io.aeron.driver.ThreadingMode;
 import io.aeron.test.Tests;
+import io.aeron.test.cluster.ClusterTests;
 import org.agrona.CloseHelper;
 import org.agrona.IoUtil;
 import org.agrona.MutableDirectBuffer;
@@ -37,8 +38,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
+import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import static io.aeron.agent.ClusterEventCode.*;
 import static io.aeron.agent.CommonEventEncoder.LOG_HEADER_LENGTH;
@@ -60,7 +63,7 @@ public class ClusterLoggingAgentTest
     public void after()
     {
         CloseHelper.closeAll(clusteredMediaDriver.consensusModule(), container, clusteredMediaDriver);
-        AgentTests.afterAgent();
+        AgentTests.stopLogging();
 
         if (testDir != null && testDir.exists())
         {
@@ -121,16 +124,17 @@ public class ClusterLoggingAgentTest
             .threadingMode(ArchiveThreadingMode.SHARED);
 
         final ConsensusModule.Context consensusModuleCtx = new ConsensusModule.Context()
-            .errorHandler(Tests::onError)
+            .errorHandler(ClusterTests.errorHandler(0))
             .clusterDir(new File(testDir, "consensus-module"))
             .archiveContext(aeronArchiveContext.clone())
             .clusterMemberId(0)
             .clusterMembers("0,localhost:20110,localhost:20220,localhost:20330,localhost:20440,localhost:8010")
-            .logChannel("aeron:udp?term-length=256k|control-mode=manual|control=localhost:20550");
+            .logChannel("aeron:udp?term-length=256k|control-mode=manual|control=localhost:20550")
+            .replicationChannel("aeron:udp?endpoint=localhost:0");
 
         final ClusteredService clusteredService = mock(ClusteredService.class);
         final ClusteredServiceContainer.Context clusteredServiceCtx = new ClusteredServiceContainer.Context()
-            .errorHandler(Tests::onError)
+            .errorHandler(ClusterTests.errorHandler(0))
             .archiveContext(aeronArchiveContext.clone())
             .clusterDir(new File(testDir, "service"))
             .clusteredService(clusteredService);
@@ -141,17 +145,20 @@ public class ClusterLoggingAgentTest
         Tests.await(WAIT_LIST::isEmpty);
 
         final Counter state = clusteredMediaDriver.consensusModule().context().electionStateCounter();
+
+        final Supplier<String> message = () -> ElectionState.get(state).toString();
         while (ElectionState.CLOSED != ElectionState.get(state))
         {
-            Tests.sleep(1);
+            Tests.sleep(1, message);
         }
     }
 
     private void before(final String enabledEvents, final EnumSet<ClusterEventCode> expectedEvents)
     {
-        System.setProperty(EventLogAgent.READER_CLASSNAME_PROP_NAME, StubEventLogReaderAgent.class.getName());
-        System.setProperty(EventConfiguration.ENABLED_CLUSTER_EVENT_CODES_PROP_NAME, enabledEvents);
-        AgentTests.beforeAgent();
+        final EnumMap<ConfigOption, String> configOptions = new EnumMap<>(ConfigOption.class);
+        configOptions.put(ConfigOption.READER_CLASSNAME, StubEventLogReaderAgent.class.getName());
+        configOptions.put(ConfigOption.ENABLED_CLUSTER_EVENT_CODES, enabledEvents);
+        AgentTests.startLogging(configOptions);
 
         WAIT_LIST.clear();
         WAIT_LIST.addAll(expectedEvents);
@@ -177,17 +184,21 @@ public class ClusterLoggingAgentTest
 
         public void onMessage(final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length)
         {
-            final ClusterEventCode eventCode = fromEventCodeId(msgTypeId);
             final int offset = LOG_HEADER_LENGTH + index + SIZE_OF_INT;
+            final ClusterEventCode eventCode = fromEventCodeId(msgTypeId);
+
             switch (eventCode)
             {
                 case ROLE_CHANGE:
+                {
                     final String roleChange = buffer.getStringAscii(offset);
                     if (roleChange.contains("LEADER"))
                     {
                         WAIT_LIST.remove(eventCode);
                     }
                     break;
+                }
+
                 case STATE_CHANGE:
                 {
                     final String stateChange = buffer.getStringAscii(offset);
@@ -197,6 +208,7 @@ public class ClusterLoggingAgentTest
                     }
                     break;
                 }
+
                 case ELECTION_STATE_CHANGE:
                 {
                     final String stateChange = buffer.getStringAscii(offset);

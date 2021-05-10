@@ -147,6 +147,7 @@ public final class PublicationImage
     private final boolean isReliable;
 
     private boolean isRebuilding = true;
+    private volatile boolean hasReceiverReleased = false;
     private volatile State state = State.INIT;
 
     private final CachedNanoClock cachedNanoClock;
@@ -446,6 +447,11 @@ public final class PublicationImage
         }
     }
 
+    void receiverRelease()
+    {
+        hasReceiverReleased = true;
+    }
+
     void addDestination(final int transportIndex, final ReceiveDestinationTransport transport)
     {
         imageConnections = ArrayUtil.ensureCapacity(imageConnections, transportIndex + 1);
@@ -517,7 +523,8 @@ public final class PublicationImage
             final int threshold = CongestionControl.threshold(windowLength);
 
             if (CongestionControl.shouldForceStatusMessage(ccOutcome) ||
-                (minSubscriberPosition > (nextSmPosition + threshold)))
+                (minSubscriberPosition > (nextSmPosition + threshold)) ||
+                windowLength != nextSmReceiverWindowLength)
             {
                 cleanBufferTo(minSubscriberPosition - (termLengthMask + 1));
                 scheduleStatusMessage(minSubscriberPosition, windowLength);
@@ -587,22 +594,16 @@ public final class PublicationImage
     }
 
     /**
-     * To be called from the {@link Receiver} to see if a image should be retained.
+     * To be called from the {@link Receiver} to see if a image should be dispatched to.
      *
      * @param nowNs current time to check against for activity.
      * @return true if the image should be retained otherwise false.
      */
-    boolean hasActivityAndNotEndOfStream(final long nowNs)
+    boolean isConnected(final long nowNs)
     {
-        boolean isActive = true;
-
-        if (((timeOfLastPacketNs + imageLivenessTimeoutNs) - nowNs < 0) ||
-            (isEndOfStream && rebuildPosition.getVolatile() >= hwmPosition.get()))
-        {
-            isActive = false;
-        }
-
-        return isActive;
+        return ((timeOfLastPacketNs + imageLivenessTimeoutNs) - nowNs >= 0) &&
+            !channelEndpoint.isClosed() &&
+            (!isEndOfStream || rebuildPosition.getVolatile() < hwmPosition.get());
     }
 
     /**
@@ -783,7 +784,7 @@ public final class PublicationImage
      */
     public boolean hasReachedEndOfLife()
     {
-        return State.DONE == state;
+        return hasReceiverReleased && State.DONE == state;
     }
 
     private boolean isDrained()
@@ -969,7 +970,7 @@ public final class PublicationImage
         }
 
         final UnsafeBuffer metaDataBuffer = rawLog.metaData();
-        if (!rawLog.isInactive() && metaDataBuffer.getInt(LOG_ACTIVE_TRANSPORT_COUNT) != activeTransportCount)
+        if (metaDataBuffer.getInt(LOG_ACTIVE_TRANSPORT_COUNT) != activeTransportCount)
         {
             LogBufferDescriptor.activeTransportCount(metaDataBuffer, activeTransportCount);
         }

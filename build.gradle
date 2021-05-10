@@ -24,8 +24,8 @@ plugins {
     id 'java-library'
     id 'idea'
     id 'com.github.johnrengelman.shadow' version '6.1.0' apply false
-    id 'biz.aQute.bnd.builder' version '5.1.2' apply false
-    id "com.github.ben-manes.versions" version "0.36.0"
+    id 'biz.aQute.bnd.builder' version '5.3.0' apply false
+    id "com.github.ben-manes.versions" version "0.38.0"
 }
 
 defaultTasks 'clean', 'build'
@@ -49,14 +49,14 @@ def toolchainLauncher = javaToolchains.launcherFor {
 def aeronGroup = 'io.aeron'
 def aeronVersion = file('version.txt').text.trim()
 
-def agronaVersion = '1.9.0'
-def agronaVersionRange = '[1.9,1.10[' // allow any patch release of 1.9.x
-def sbeVersion = '1.21.0'
+def agronaVersion = '1.10.0'
+def agronaVersionRange = '[1.10,1.11[' // allow any patch release of 1.10.x
+def sbeVersion = '1.22.0'
 def checkstyleVersion = '8.39'
 def hamcrestVersion = '2.2'
 def junitVersion = '5.7.1'
-def mockitoVersion = '3.7.7'
-def byteBuddyVersion = '1.10.20'
+def mockitoVersion = '3.9.0'
+def byteBuddyVersion = '1.10.22'
 def hdrHistogramVersion = '2.1.12'
 
 ext {
@@ -144,6 +144,9 @@ allprojects {
     configurations.all {
         resolutionStrategy {
             failOnVersionConflict()
+
+            force "net.bytebuddy:byte-buddy:${byteBuddyVersion}",
+                  "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
         }
     }
 
@@ -159,10 +162,7 @@ subprojects {
 
     dependencies {
         testImplementation "org.hamcrest:hamcrest:${hamcrestVersion}"
-        testImplementation ("org.mockito:mockito-junit-jupiter:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        testImplementation "org.mockito:mockito-core:${mockitoVersion}"
         testImplementation "org.junit.jupiter:junit-jupiter-params:${junitVersion}"
         testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
     }
@@ -210,10 +210,16 @@ subprojects {
         }
 
         testLogging {
-            exceptionFormat = 'full'
+            for (def level : LogLevel.values())
+            {
+                def testLogging = get(level)
+                testLogging.exceptionFormat = 'full'
+                testLogging.events = ["FAILED", "STANDARD_OUT", "STANDARD_ERROR"]
+            }
         }
 
         systemProperties(
+            'java.util.logging.config.class': 'io.aeron.test.DisableJavaUtilLogging',
             'aeron.shared.idle.strategy': 'yield',
             'aeron.conductor.idle.strategy': 'yield',
             'aeron.sender.idle.strategy': 'yield',
@@ -226,10 +232,22 @@ subprojects {
     }
 
     task slowTest(type: Test) {
+        dependsOn ":aeron-agent:jar"
+
         maxParallelForks = 1
         useJUnitPlatform {
             includeTags 'slow'
         }
+
+        ext.agentFilename = {
+            project.file("../aeron-agent/build/libs/aeron-agent-${aeronVersion}.jar").absolutePath
+        }
+
+        jvmArgs '-javaagent:' + agentFilename()
+        systemProperty "aeron.event.cluster.log", "all"
+        systemProperty "aeron.event.cluster.log.disable", "CANVASS_POSITION"
+        systemProperty "aeron.debug.timeout", "3600s"
+        systemProperty "aeron.event.log.reader.classname", "io.aeron.agent.CollectingEventLogReaderAgent"
     }
 
     task topologyTest(type: Test) {
@@ -242,12 +260,12 @@ subprojects {
     javadoc {
         failOnError false
         title = '<h1>Aeron Message Transport</h1>'
-        options.bottom = '<i>Copyright &#169; 2014-2020 Real Logic Limited. All Rights Reserved.</i>'
+        options.bottom = '<i>Copyright &#169; 2014-2021 Real Logic Limited. All Rights Reserved.</i>'
         options.encoding = 'UTF-8'
         options.docEncoding = 'UTF-8'
         options.charSet = 'UTF-8'
         options.links("https://www.javadoc.io/doc/org.agrona/agrona/${agronaVersion}/")
-        if (buildJavaVersion >= 16) { // early access JavaDoc location is different
+        if (buildJavaVersion >= 17) { // early access JavaDoc location is different
             options.links("https://download.java.net/java/early_access/jdk${buildJavaVersion}/docs/api/")
         }
         else if (buildJavaVersion >= 11) {
@@ -287,12 +305,8 @@ project(':aeron-client') {
                 prefer(agronaVersion)
             }
         }
-        testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
-        testRuntimeOnly "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testImplementation ("org.mockito:mockito-inline:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        testImplementation project(':aeron-test-support')
+        testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
     }
 
     jar {
@@ -352,12 +366,7 @@ project(':aeron-driver') {
     dependencies {
         api project(':aeron-client')
         testImplementation project(':aeron-test-support')
-        testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
-        testRuntimeOnly "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testImplementation ("org.mockito:mockito-inline:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
     }
 
     jar {
@@ -428,12 +437,7 @@ project(':aeron-archive') {
         api files('build/classes/java/generated')
         codecGeneration "uk.co.real-logic:sbe-tool:${sbeVersion}"
         testImplementation project(':aeron-test-support')
-        testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
-        testRuntimeOnly "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testImplementation ("org.mockito:mockito-inline:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
     }
 
     def generatedDir = file("${buildDir}/generated-src")
@@ -552,12 +556,7 @@ project(':aeron-cluster') {
         api files('build/classes/java/generated')
         codecGeneration "uk.co.real-logic:sbe-tool:${sbeVersion}"
         testImplementation project(':aeron-test-support')
-        testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
-        testRuntimeOnly "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testImplementation ("org.mockito:mockito-inline:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        testImplementation "org.mockito:mockito-inline:${mockitoVersion}"
     }
 
     def generatedDir = file("${buildDir}/generated-src")
@@ -664,7 +663,7 @@ project(':aeron-agent') {
     dependencies {
         implementation aeronClusterProject
         implementation "net.bytebuddy:byte-buddy:${byteBuddyVersion}"
-        testImplementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
+        implementation "net.bytebuddy:byte-buddy-agent:${byteBuddyVersion}"
         testImplementation project(':aeron-test-support')
     }
 
@@ -742,6 +741,7 @@ project(':aeron-samples') {
     dependencies {
         api project(':aeron-cluster')
         implementation "org.hdrhistogram:HdrHistogram:${hdrHistogramVersion}"
+        testImplementation project(':aeron-test-support')
     }
 
     java {
@@ -803,9 +803,6 @@ project(':aeron-system-tests') {
         testImplementation project(path: ':aeron-client', configuration: 'tests')
         testImplementation project(path: ':aeron-archive', configuration: 'tests')
         testImplementation project(path: ':aeron-cluster')
-        testImplementation ("org.mockito:mockito-core:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-        }
         if (buildJavaVersion == 8) {
             def jdkHome = toolchainLauncher.get().metadata.installationPath.asFile.toPath().toAbsolutePath()
             testImplementation files(jdkHome.resolve("lib/tools.jar").toFile())
@@ -813,8 +810,8 @@ project(':aeron-system-tests') {
     }
 
     test {
-        systemProperties('java.net.preferIPv4Stack': 'true')
-        systemProperties('aeron.test.system.aeronmd.path': System.getProperty('aeron.test.system.aeronmd.path'))
+        systemProperty('java.net.preferIPv4Stack', 'true')
+        systemProperty('aeron.test.system.aeronmd.path', System.getProperty('aeron.test.system.aeronmd.path'))
     }
 
     javadoc.enabled = false
@@ -825,10 +822,7 @@ project(':aeron-test-support') {
         api project(':aeron-client')
         api project(':aeron-cluster')
         api "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
-        implementation ("org.mockito:mockito-junit-jupiter:${mockitoVersion}") {
-            exclude group: 'org.junit.jupiter'
-            exclude group: 'net.bytebuddy'
-        }
+        implementation "org.mockito:mockito-core:${mockitoVersion}"
     }
 
     javadoc.enabled = false
@@ -933,6 +927,6 @@ task copyTestLogs(type: Copy) {
 }
 
 wrapper {
-    gradleVersion = '6.8.2'
+    gradleVersion = '6.8.3'
     distributionType = 'ALL'
 }

@@ -29,10 +29,12 @@ import org.agrona.concurrent.status.CountersReader;
 import org.agrona.concurrent.status.UnsafeBufferPosition;
 
 import java.util.ArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 import static io.aeron.Aeron.Configuration.IDLE_SLEEP_MS;
 import static io.aeron.Aeron.Configuration.IDLE_SLEEP_NS;
+import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.status.HeartbeatTimestamp.HEARTBEAT_TYPE_ID;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -42,9 +44,10 @@ import static java.util.concurrent.TimeUnit.NANOSECONDS;
  * Client conductor receives responses and notifications from Media Driver and acts on them in addition to forwarding
  * commands from the Client API to the Media Driver conductor.
  */
-class ClientConductor implements Agent
+final class ClientConductor implements Agent
 {
-    private static final long NO_CORRELATION_ID = Aeron.NULL_VALUE;
+    private static final long NO_CORRELATION_ID = NULL_VALUE;
+    private static final long EXPLICIT_CLOSE_LINGER_NS = TimeUnit.SECONDS.toNanos(1);
 
     private final long keepAliveIntervalNs;
     private final long driverTimeoutMs;
@@ -164,6 +167,9 @@ class ClientConductor implements Agent
 
                 driverProxy.clientClose();
                 ctx.close();
+
+                ctx.countersMetaDataBuffer().wrap(0, 0);
+                ctx.countersValuesBuffer().wrap(0, 0);
             }
         }
         finally
@@ -225,7 +231,7 @@ class ClientConductor implements Agent
         if (resource instanceof Subscription)
         {
             final Subscription subscription = (Subscription)resource;
-            subscription.internalClose();
+            subscription.internalClose(NULL_VALUE);
             resourceByRegIdMap.remove(correlationId);
         }
     }
@@ -476,7 +482,8 @@ class ClientConductor implements Agent
                 publication.internalClose();
                 if (publication == resourceByRegIdMap.remove(publication.registrationId()))
                 {
-                    releaseLogBuffers(publication.logBuffers(), publication.originalRegistrationId());
+                    releaseLogBuffers(
+                        publication.logBuffers(), publication.originalRegistrationId(), EXPLICIT_CLOSE_LINGER_NS);
                     asyncCommandIdSet.add(driverProxy.removePublication(publication.registrationId()));
                 }
             }
@@ -538,7 +545,7 @@ class ClientConductor implements Agent
             {
                 ensureNotReentrant();
 
-                subscription.internalClose();
+                subscription.internalClose(EXPLICIT_CLOSE_LINGER_NS);
                 final long registrationId = subscription.registrationId();
                 if (subscription == resourceByRegIdMap.remove(registrationId))
                 {
@@ -999,13 +1006,16 @@ class ClientConductor implements Agent
         }
     }
 
-    void releaseLogBuffers(final LogBuffers logBuffers, final long registrationId)
+    void releaseLogBuffers(
+        final LogBuffers logBuffers, final long registrationId, final long lingerDurationNs)
     {
         if (logBuffers.decRef() == 0)
         {
-            logBuffers.lingerDeadlineNs(nanoClock.nanoTime() + ctx.resourceLingerDurationNs());
-            logBuffersByIdMap.remove(registrationId);
             lingeringLogBuffers.add(logBuffers);
+            logBuffersByIdMap.remove(registrationId);
+
+            final long lingerNs = NULL_VALUE == lingerDurationNs ? ctx.resourceLingerDurationNs() : lingerDurationNs;
+            logBuffers.lingerDeadlineNs(nanoClock.nanoTime() + lingerNs);
         }
     }
 
@@ -1029,12 +1039,17 @@ class ClientConductor implements Agent
         }
     }
 
-    void closeImages(final Image[] images, final UnavailableImageHandler unavailableImageHandler)
+    void closeImages(
+        final Image[] images, final UnavailableImageHandler unavailableImageHandler, final long lingerNs)
     {
         for (final Image image : images)
         {
             image.close();
-            releaseLogBuffers(image.logBuffers(), image.correlationId());
+        }
+
+        for (final Image image : images)
+        {
+            releaseLogBuffers(image.logBuffers(), image.correlationId(), lingerNs);
         }
 
         if (null != unavailableImageHandler)
@@ -1283,13 +1298,13 @@ class ClientConductor implements Agent
             if (resource instanceof Subscription)
             {
                 final Subscription subscription = (Subscription)resource;
-                subscription.internalClose();
+                subscription.internalClose(NULL_VALUE);
             }
             else if (resource instanceof Publication)
             {
                 final Publication publication = (Publication)resource;
                 publication.internalClose();
-                releaseLogBuffers(publication.logBuffers(), publication.originalRegistrationId());
+                releaseLogBuffers(publication.logBuffers(), publication.originalRegistrationId(), NULL_VALUE);
             }
             else if (resource instanceof Counter)
             {

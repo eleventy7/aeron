@@ -342,8 +342,7 @@ struct sockaddr_storage;
 
 typedef int (*aeron_congestion_control_strategy_supplier_func_t)(
     aeron_congestion_control_strategy_t **strategy,
-    size_t channel_length,
-    const char *channel,
+    aeron_udp_channel_t *channel,
     int32_t stream_id,
     int32_t session_id,
     int64_t registration_id,
@@ -762,7 +761,7 @@ int aeron_driver_context_set_re_resolution_check_interval_ns(aeron_driver_contex
 uint64_t aeron_driver_context_get_re_resolution_check_interval_ns(aeron_driver_context_t *context);
 
 /**
- * Specify the duty cycle time thresold for the conductor.
+ * Specify the duty cycle time threshold for the conductor.
  */
 #define AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD_ENV_VAR "AERON_DRIVER_CONDUCTOR_CYCLE_THRESHOLD"
 

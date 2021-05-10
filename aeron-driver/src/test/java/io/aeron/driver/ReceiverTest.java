@@ -56,7 +56,7 @@ public class ReceiverTest
 {
     private static final int TERM_BUFFER_LENGTH = TERM_MIN_LENGTH;
     private static final int POSITION_BITS_TO_SHIFT = LogBufferDescriptor.positionBitsToShift(TERM_BUFFER_LENGTH);
-    private static final String URI = "aeron:udp?endpoint=localhost:45678";
+    private static final String URI = "aeron:udp?endpoint=localhost:4005";
     private static final UdpChannel UDP_CHANNEL = UdpChannel.parse(URI);
     private static final long CORRELATION_ID = 20;
     private static final int STREAM_ID = 1010;
@@ -533,7 +533,7 @@ public class ReceiverTest
         final PublicationImage mockImage = mock(PublicationImage.class);
         when(mockImage.sessionId()).thenReturn(SESSION_ID);
         when(mockImage.streamId()).thenReturn(STREAM_ID);
-        when(mockImage.hasActivityAndNotEndOfStream(anyLong())).thenReturn(false);
+        when(mockImage.isConnected(anyLong())).thenReturn(false);
 
         receiver.onNewPublicationImage(receiveChannelEndpoint, mockImage);
         receiver.doWork();
@@ -555,7 +555,7 @@ public class ReceiverTest
         final PublicationImage mockImage = mock(PublicationImage.class);
         when(mockImage.sessionId()).thenReturn(SESSION_ID);
         when(mockImage.streamId()).thenReturn(STREAM_ID);
-        when(mockImage.hasActivityAndNotEndOfStream(anyLong())).thenReturn(true);
+        when(mockImage.isConnected(anyLong())).thenReturn(true);
 
         receiver.onNewPublicationImage(receiveChannelEndpoint, mockImage);
         receiver.onRemoveSubscription(receiveChannelEndpoint, STREAM_ID);

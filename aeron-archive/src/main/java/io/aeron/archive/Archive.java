@@ -848,6 +848,16 @@ public final class Archive implements AutoCloseable
                 throw new ConfigurationException("invalid fileIoMaxLength=" + fileIoMaxLength);
             }
 
+            if (!controlChannel.startsWith(CommonContext.UDP_CHANNEL))
+            {
+                throw new ConfigurationException("remote control channel must be UDP media: uri=" + controlChannel);
+            }
+
+            if (!localControlChannel.startsWith(CommonContext.IPC_CHANNEL))
+            {
+                throw new ConfigurationException("local control channel must be IPC media: uri=" + localControlChannel);
+            }
+
             if (null == archiveDir)
             {
                 archiveDir = new File(archiveDirectoryName);
@@ -860,8 +870,7 @@ public final class Archive implements AutoCloseable
 
             if (!archiveDir.exists() && !archiveDir.mkdirs())
             {
-                throw new ArchiveException(
-                    "failed to create archive dir: " + archiveDir.getAbsolutePath());
+                throw new ArchiveException("failed to create archive dir: " + archiveDir.getAbsolutePath());
             }
 
             archiveDirChannel = channelForDirectorySync(archiveDir, catalogFileSyncLevel);
@@ -2236,7 +2245,7 @@ public final class Archive implements AutoCloseable
         {
             if (null == dataBuffer)
             {
-                dataBuffer = allocateBuffer();
+                dataBuffer = new UnsafeBuffer(allocateDirectAligned(fileIoMaxLength, CACHE_LINE_LENGTH));
             }
 
             return dataBuffer;
@@ -2257,7 +2266,7 @@ public final class Archive implements AutoCloseable
 
             if (null == replayBuffer)
             {
-                replayBuffer = allocateBuffer();
+                replayBuffer = new UnsafeBuffer(allocateDirectAligned(fileIoMaxLength, CACHE_LINE_LENGTH));
             }
 
             return replayBuffer;
@@ -2283,15 +2292,10 @@ public final class Archive implements AutoCloseable
 
             if (null == recordChecksumBuffer)
             {
-                recordChecksumBuffer = allocateBuffer();
+                recordChecksumBuffer = new UnsafeBuffer(allocateDirectAligned(fileIoMaxLength, CACHE_LINE_LENGTH));
             }
 
             return recordChecksumBuffer;
-        }
-
-        private UnsafeBuffer allocateBuffer()
-        {
-            return new UnsafeBuffer(allocateDirectAligned(fileIoMaxLength, CACHE_LINE_LENGTH));
         }
 
         /**
@@ -2301,10 +2305,9 @@ public final class Archive implements AutoCloseable
          */
         public void close()
         {
+            CloseHelper.close(countedErrorHandler, archiveDirChannel);
             CloseHelper.close(countedErrorHandler, catalog);
             CloseHelper.close(countedErrorHandler, markFile);
-            CloseHelper.close(countedErrorHandler, archiveDirChannel);
-            archiveDirChannel = null;
 
             CloseHelper.quietClose(errorCounter);
             if (errorHandler instanceof AutoCloseable)
@@ -2320,6 +2323,68 @@ public final class Archive implements AutoCloseable
             {
                 CloseHelper.close(countedErrorHandler, controlSessionsCounter);
             }
+        }
+
+        /**
+         * {@inheritDoc}
+         */
+        public String toString()
+        {
+            return "Archive.Context{" +
+                "\n    isConcluded=" + isConcluded +
+                "\n    deleteArchiveOnStart=" + deleteArchiveOnStart +
+                "\n    ownsAeronClient=" + ownsAeronClient +
+                "\n    aeronDirectoryName='" + aeronDirectoryName + '\'' +
+                "\n    aeron=" + aeron +
+                "\n    archiveDir=" + archiveDir +
+                "\n    archiveDirectoryName='" + archiveDirectoryName + '\'' +
+                "\n    archiveDirChannel=" + archiveDirChannel +
+                "\n    archiveFileStore=" + archiveFileStore +
+                "\n    catalog=" + catalog +
+                "\n    markFile=" + markFile +
+                "\n    archiveClientContext=" + archiveClientContext +
+                "\n    mediaDriverAgentInvoker=" + mediaDriverAgentInvoker +
+                "\n    controlChannel='" + controlChannel + '\'' +
+                "\n    controlStreamId=" + controlStreamId +
+                "\n    localControlChannel='" + localControlChannel + '\'' +
+                "\n    localControlStreamId=" + localControlStreamId +
+                "\n    controlTermBufferSparse=" + controlTermBufferSparse +
+                "\n    controlTermBufferLength=" + controlTermBufferLength +
+                "\n    controlMtuLength=" + controlMtuLength +
+                "\n    recordingEventsChannel='" + recordingEventsChannel + '\'' +
+                "\n    recordingEventsStreamId=" + recordingEventsStreamId +
+                "\n    recordingEventsEnabled=" + recordingEventsEnabled +
+                "\n    replicationChannel='" + replicationChannel + '\'' +
+                "\n    connectTimeoutNs=" + connectTimeoutNs +
+                "\n    replayLingerTimeoutNs=" + replayLingerTimeoutNs +
+                "\n    maxCatalogEntries=" + maxCatalogEntries +
+                "\n    catalogCapacity=" + catalogCapacity +
+                "\n    lowStorageSpaceThreshold=" + lowStorageSpaceThreshold +
+                "\n    segmentFileLength=" + segmentFileLength +
+                "\n    fileSyncLevel=" + fileSyncLevel +
+                "\n    catalogFileSyncLevel=" + catalogFileSyncLevel +
+                "\n    maxConcurrentRecordings=" + maxConcurrentRecordings +
+                "\n    maxConcurrentReplays=" + maxConcurrentReplays +
+                "\n    fileIoMaxLength=" + fileIoMaxLength +
+                "\n    threadingMode=" + threadingMode +
+                "\n    threadFactory=" + threadFactory +
+                "\n    abortLatch=" + abortLatch +
+                "\n    idleStrategySupplier=" + idleStrategySupplier +
+                "\n    replayerIdleStrategySupplier=" + replayerIdleStrategySupplier +
+                "\n    recorderIdleStrategySupplier=" + recorderIdleStrategySupplier +
+                "\n    epochClock=" + epochClock +
+                "\n    authenticatorSupplier=" + authenticatorSupplier +
+                "\n    controlSessionsCounter=" + controlSessionsCounter +
+                "\n    errorBufferLength=" + errorBufferLength +
+                "\n    errorHandler=" + errorHandler +
+                "\n    errorCounter=" + errorCounter +
+                "\n    countedErrorHandler=" + countedErrorHandler +
+                "\n    recordChecksum=" + recordChecksum +
+                "\n    replayChecksum=" + replayChecksum +
+                "\n    dataBuffer=" + dataBuffer +
+                "\n    replayBuffer=" + replayBuffer +
+                "\n    recordChecksumBuffer=" + recordChecksumBuffer +
+                '}';
         }
     }
 

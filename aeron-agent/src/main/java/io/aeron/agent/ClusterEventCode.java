@@ -26,10 +26,35 @@ import static io.aeron.agent.ClusterEventDissector.dissectNewLeadershipTerm;
  */
 public enum ClusterEventCode implements EventCode
 {
+    /**
+     * State change events within a cluster election.
+     */
     ELECTION_STATE_CHANGE(1, ClusterEventDissector::dissectStateChange),
+
+    /**
+     * A new term of leadership is to begin for an elected cluster member.
+     */
     NEW_LEADERSHIP_TERM(2, (eventCode, buffer, offset, builder) -> dissectNewLeadershipTerm(buffer, offset, builder)),
+
+    /**
+     * State change in the cluster node consensus module.
+     */
     STATE_CHANGE(3, ClusterEventDissector::dissectStateChange),
-    ROLE_CHANGE(4, ClusterEventDissector::dissectStateChange);
+
+    /**
+     * Role change for the cluster member.
+     */
+    ROLE_CHANGE(4, ClusterEventDissector::dissectStateChange),
+
+    /**
+     * A Canvass position event to notify the state of a member's log before nomination.
+     */
+    CANVASS_POSITION(5, ClusterEventDissector::dissectCanvassPosition),
+
+    /**
+     * A vote request for new leadership.
+     */
+    REQUEST_VOTE(6, ClusterEventDissector::dissectRequestVote);
 
     static final int EVENT_CODE_TYPE = EventCodeType.CLUSTER.getTypeCode();
     private static final ClusterEventCode[] EVENT_CODE_BY_ID;
@@ -63,7 +88,18 @@ public enum ClusterEventCode implements EventCode
 
     static ClusterEventCode get(final int id)
     {
-        return id >= 0 && id < EVENT_CODE_BY_ID.length ? EVENT_CODE_BY_ID[id] : null;
+        if (id < 0 || id >= EVENT_CODE_BY_ID.length)
+        {
+            throw new IllegalArgumentException("no ClusterEventCode for id: " + id);
+        }
+
+        final ClusterEventCode code = EVENT_CODE_BY_ID[id];
+        if (null == code)
+        {
+            throw new IllegalArgumentException("no ClusterEventCode for id: " + id);
+        }
+
+        return code;
     }
 
     /**

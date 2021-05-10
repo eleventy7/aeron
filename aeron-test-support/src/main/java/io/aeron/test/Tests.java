@@ -29,6 +29,8 @@ import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 
+import javax.management.*;
+import java.lang.management.ManagementFactory;
 import java.lang.reflect.Field;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
@@ -44,6 +46,7 @@ import static org.mockito.Mockito.doAnswer;
 public class Tests
 {
     public static final IdleStrategy SLEEP_1_MS = new SleepingMillisIdleStrategy(1);
+    private static final String LOGGING_MBEAN_NAME = "io.aeron:type=logging";
 
     /**
      * Set a private field in a class for testing.
@@ -64,6 +67,23 @@ public class Tests
         {
             LangUtil.rethrowUnchecked(t);
         }
+    }
+
+    /**
+     * Error handler that can be used as an implementation of {@link org.agrona.ErrorHandler} which will print out
+     * a stacktrace unless the exception is to type {@link AeronException.Category#WARN}.
+     *
+     * @param ex to be handled.
+     */
+    public static void onError(final Throwable ex)
+    {
+        if (ex instanceof AeronException && ((AeronException)ex).category() == AeronException.Category.WARN)
+        {
+            //System.out.println("Warning: " + ex.getMessage());
+            return;
+        }
+
+        ex.printStackTrace();
     }
 
     /**
@@ -119,6 +139,14 @@ public class Tests
         }
     }
 
+    /**
+     * Check if the interrupt flag has been set on the current thread and fail the test if it has.
+     * <p>
+     * This is useful for terminating tests stuck in a loop on timeout otherwise JUnit will proceed to the next test
+     * and leave the thread spinning and consuming CPU resource.
+     *
+     * @param message to provide additional context on unexpected interrupt.
+     */
     public static void checkInterruptStatus(final String message)
     {
         if (Thread.currentThread().isInterrupted())
@@ -128,6 +156,11 @@ public class Tests
         }
     }
 
+    /**
+     * Print out the message and stack trace on thread interrupt.
+     *
+     * @param message to provide additional context on unexpected interrupt.
+     */
     public static void unexpectedInterruptStackTrace(final String message)
     {
         final StringBuilder sb = new StringBuilder();
@@ -140,15 +173,28 @@ public class Tests
 
         appendStackTrace(sb).append('\n');
 
-        System.out.println(sb.toString());
+        System.out.println(sb);
         System.out.println(SystemUtil.threadDump());
     }
 
+    /**
+     * Append the current thread stack trace to a {@link StringBuilder}.
+     *
+     * @param sb to append the stack trace to.
+     * @return the builder for a fluent API.
+     */
     public static StringBuilder appendStackTrace(final StringBuilder sb)
     {
         return appendStackTrace(sb, Thread.currentThread().getStackTrace());
     }
 
+    /**
+     * Append a thread stack trace to a {@link StringBuilder}.
+     *
+     * @param sb                 to append the stack trace to.
+     * @param stackTraceElements to be appended.
+     * @return the builder for a fluent API.
+     */
     public static StringBuilder appendStackTrace(final StringBuilder sb, final StackTraceElement[] stackTraceElements)
     {
         sb.append(System.lineSeparator());
@@ -246,37 +292,72 @@ public class Tests
             }).when(mock).close();
     }
 
-    public static void wait(final IdleStrategy idleStrategy, final Supplier<String> messageSupplier)
+    /**
+     * {@link IdleStrategy#idle()} the provide strategy and check for thread interrupt after.
+     *
+     * @param idleStrategy    to be used for the idle operation.
+     * @param messageSupplier to be used in the event of interrupt.
+     */
+    public static void idle(final IdleStrategy idleStrategy, final Supplier<String> messageSupplier)
     {
         idleStrategy.idle();
         checkInterruptStatus(messageSupplier);
     }
 
-    public static void wait(final IdleStrategy idleStrategy, final String format, final Object... params)
+    /**
+     * {@link IdleStrategy#idle()} the provide strategy and check for thread interrupt after.
+     *
+     * @param idleStrategy to be used for the idle operation.
+     * @param format       of the message to be used in the event of interrupt.
+     * @param params       to be substituted into the message format.
+     */
+    public static void idle(final IdleStrategy idleStrategy, final String format, final Object... params)
     {
         idleStrategy.idle();
         checkInterruptStatus(format, params);
     }
 
-    public static void wait(final IdleStrategy idleStrategy, final String message)
+    /**
+     * {@link IdleStrategy#idle()} the provide strategy and check for thread interrupt after.
+     *
+     * @param idleStrategy to be used for the idle operation.
+     * @param message      to be used in the event of interrupt.
+     */
+    public static void idle(final IdleStrategy idleStrategy, final String message)
     {
         idleStrategy.idle();
         checkInterruptStatus(message);
     }
 
-    public static void yieldingWait(final Supplier<String> messageSupplier)
+    /**
+     * Call {@link YieldingIdleStrategy#idle()} and check for thread interrupt after.
+     *
+     * @param messageSupplier to be used in the event of interrupt.
+     */
+    public static void yieldingIdle(final Supplier<String> messageSupplier)
     {
-        wait(YieldingIdleStrategy.INSTANCE, messageSupplier);
+        idle(YieldingIdleStrategy.INSTANCE, messageSupplier);
     }
 
-    public static void yieldingWait(final String format, final Object... params)
+    /**
+     * Call {@link YieldingIdleStrategy#idle()} and check for thread interrupt after.
+     *
+     * @param format of the message to be used in the event of interrupt.
+     * @param params to be substituted into the message format.
+     */
+    public static void yieldingIdle(final String format, final Object... params)
     {
-        wait(YieldingIdleStrategy.INSTANCE, format, params);
+        idle(YieldingIdleStrategy.INSTANCE, format, params);
     }
 
-    public static void yieldingWait(final String message)
+    /**
+     * Call {@link YieldingIdleStrategy#idle()} and check for thread interrupt after.
+     *
+     * @param message to be used in the event of interrupt.
+     */
+    public static void yieldingIdle(final String message)
     {
-        wait(YieldingIdleStrategy.INSTANCE, message);
+        idle(YieldingIdleStrategy.INSTANCE, message);
     }
 
     /**
@@ -306,6 +387,12 @@ public class Tests
         while (!condition.getAsBoolean() && ((nowNs - startNs) < timeoutNs) && i++ < maxIterations);
     }
 
+    /**
+     * Await a condition with a timeout and also check for thread interrupt.
+     *
+     * @param conditionSupplier for the condition to be awaited.
+     * @param timeoutNs         to await.
+     */
     public static void await(final BooleanSupplier conditionSupplier, final long timeoutNs)
     {
         final long deadlineNs = System.nanoTime() + timeoutNs;
@@ -320,6 +407,11 @@ public class Tests
         }
     }
 
+    /**
+     * Await a condition with a check for thread interrupt.
+     *
+     * @param conditionSupplier for the condition to be awaited.
+     */
     public static void await(final BooleanSupplier conditionSupplier)
     {
         while (!conditionSupplier.getAsBoolean())
@@ -328,17 +420,12 @@ public class Tests
         }
     }
 
-    public static void onError(final Throwable ex)
-    {
-        if (ex instanceof AeronException && ((AeronException)ex).category() == AeronException.Category.WARN)
-        {
-            //System.out.println("Warning: " + ex.getMessage());
-            return;
-        }
-
-        ex.printStackTrace();
-    }
-
+    /**
+     * Await a counter reaching or passing a value while checking for thread interrupt.
+     *
+     * @param counter to be evaluated.
+     * @param value   as threshold to awaited.
+     */
     public static void awaitValue(final AtomicLong counter, final long value)
     {
         long counterValue;
@@ -353,6 +440,12 @@ public class Tests
         }
     }
 
+    /**
+     * Await a counter reaching or passing a value while checking for thread interrupt.
+     *
+     * @param counter to be evaluated.
+     * @param value   as threshold to awaited.
+     */
     public static void awaitValue(final AtomicCounter counter, final long value)
     {
         long counterValue;
@@ -372,29 +465,50 @@ public class Tests
         }
     }
 
-    public static void awaitCounterDelta(final CountersReader reader, final int counterId, final long delta)
+    /**
+     * Await a counter increasing by a delta that will sleep and check for thread interrupt.
+     *
+     * @param counters  reader over all counters.
+     * @param counterId of the specific counter to be read.
+     * @param delta     increase to await from initial value.
+     */
+    public static void awaitCounterDelta(final CountersReader counters, final int counterId, final long delta)
     {
-        awaitCounterDelta(reader, counterId, reader.getCounterValue(counterId), delta);
+        awaitCounterDelta(counters, counterId, counters.getCounterValue(counterId), delta);
     }
 
+    /**
+     * Await a counter increasing by a delta that will sleep and check for thread interrupt.
+     *
+     * @param counters     reader over all counters.
+     * @param counterId    of the specific counter to be read.
+     * @param initialValue from which the delta will be tracked.
+     * @param delta        increase to await from initial value.
+     */
     public static void awaitCounterDelta(
-        final CountersReader reader, final int counterId, final long initialValue, final long delta)
+        final CountersReader counters, final int counterId, final long initialValue, final long delta)
     {
         final long expectedValue = initialValue + delta;
         final Supplier<String> counterMessage = () ->
-            "Timed out waiting for counter '" + reader.getCounterLabel(counterId) +
-            "' to increase to at least " + expectedValue;
+            "timed out waiting for '" + counters.getCounterLabel(counterId) + "' to reach " + expectedValue;
 
-        while (reader.getCounterValue(counterId) < expectedValue)
+        while (counters.getCounterValue(counterId) < expectedValue)
         {
-            wait(SLEEP_1_MS, counterMessage);
+            idle(SLEEP_1_MS, counterMessage);
         }
     }
 
+    /**
+     * Repeat the attempt to re-add a subscription until successful if it fails with a warning
+     * {@link RegistrationException} which could be due to a port clash.
+     *
+     * @param aeron    to add the subscription on.
+     * @param channel  for the subscription.
+     * @param streamId for the subscription.
+     * @return the added subscription.
+     */
     public static Subscription reAddSubscription(final Aeron aeron, final String channel, final int streamId)
     {
-        // In cases where a subscription is added immediately after closing one it is possible that
-        // the second one can fail, so retry in that case.
         while (true)
         {
             try
@@ -408,11 +522,16 @@ public class Tests
                     throw ex;
                 }
 
-                yieldingWait(ex.getMessage());
+                yieldingIdle(ex.getMessage());
             }
         }
     }
 
+    /**
+     * Await a Publication being connected by yielding and checking for thread interrupt.
+     *
+     * @param publication to await being connected.
+     */
     public static void awaitConnected(final Publication publication)
     {
         while (!publication.isConnected())
@@ -421,6 +540,11 @@ public class Tests
         }
     }
 
+    /**
+     * Await a Subscription being connected by yielding and checking for thread interrupt.
+     *
+     * @param subscription to await being connected.
+     */
     public static void awaitConnected(final Subscription subscription)
     {
         while (!subscription.isConnected())
@@ -429,6 +553,12 @@ public class Tests
         }
     }
 
+    /**
+     * Await a Subscription have a minimum number of connections by yielding and checking for thread interrupt.
+     *
+     * @param subscription    to await being connected.
+     * @param connectionCount to await.
+     */
     public static void awaitConnections(final Subscription subscription, final int connectionCount)
     {
         while (subscription.imageCount() < connectionCount)
@@ -437,15 +567,103 @@ public class Tests
         }
     }
 
-    public static String generateStringWithSuffix(final String prefix, final String suffix, final int repeatSuffixTimes)
+    /**
+     * Generates a string value that is a prefix with a suffix appended a number of times.
+     *
+     * @param prefix            for the beginning of the string.
+     * @param suffix            for the end of the string.
+     * @param suffixRepeatCount for number of times the suffix is appended.
+     * @return the generated string.
+     */
+    public static String generateStringWithSuffix(final String prefix, final String suffix, final int suffixRepeatCount)
     {
-        final StringBuilder builder = new StringBuilder(prefix);
+        final StringBuilder builder = new StringBuilder(prefix.length() + (suffix.length() * suffixRepeatCount));
 
-        for (int i = 0; i < repeatSuffixTimes; i++)
+        builder.append(prefix);
+
+        for (int i = 0; i < suffixRepeatCount; i++)
         {
             builder.append(suffix);
         }
 
         return builder.toString();
+    }
+
+    /**
+     * Start the collecting log of debug events for a test run.
+     */
+    public static void startLogCollecting()
+    {
+        try
+        {
+            final MBeanServer mBeanServer = ManagementFactory.getPlatformMBeanServer();
+            final ObjectName loggingName = new ObjectName(LOGGING_MBEAN_NAME);
+
+            try
+            {
+                mBeanServer.setAttribute(loggingName, new Attribute("Collecting", true));
+            }
+            catch (final InstanceNotFoundException ignore)
+            {
+                // It must not have been set up for the test. Expected in many cases.
+            }
+        }
+        catch (final Exception ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+    }
+
+    /**
+     * Reset the collecting of logs for a new test run.
+     */
+    public static void resetLogCollecting()
+    {
+        try
+        {
+            final MBeanServer mBeanServer = ManagementFactory.getPlatformMBeanServer();
+            final ObjectName loggingName = new ObjectName(LOGGING_MBEAN_NAME);
+
+            try
+            {
+                mBeanServer.invoke(loggingName, "reset", new Object[0], new String[0]);
+            }
+            catch (final InstanceNotFoundException ignore)
+            {
+                // It must not have been set up for the test. Expected in many cases.
+            }
+        }
+        catch (final Exception ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
+    }
+
+    /**
+     * Dump the collected log of events to a file.
+     *
+     * @param filename to dump the log of events to.
+     */
+    public static void dumpCollectedLogs(final String filename)
+    {
+        try
+        {
+            final MBeanServer mBeanServer = ManagementFactory.getPlatformMBeanServer();
+            final ObjectName loggingName = new ObjectName(LOGGING_MBEAN_NAME);
+
+            try
+            {
+                mBeanServer.invoke(
+                    loggingName, "writeToFile", new Object[]{ filename }, new String[]{ "java.lang.String" });
+            }
+            catch (final InstanceNotFoundException ignore)
+            {
+                // It must not have been set up for the test. Expected in many cases.
+            }
+        }
+        catch (final Exception ex)
+        {
+            LangUtil.rethrowUnchecked(ex);
+        }
     }
 }

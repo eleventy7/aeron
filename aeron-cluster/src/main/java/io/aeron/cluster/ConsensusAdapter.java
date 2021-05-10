@@ -95,6 +95,7 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                 consensusModuleAgent.onCanvassPosition(
                     canvassPositionDecoder.logLeadershipTermId(),
                     canvassPositionDecoder.logPosition(),
+                    canvassPositionDecoder.leadershipTermId(),
                     canvassPositionDecoder.followerMemberId());
                 break;
 
@@ -137,9 +138,13 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
 
                 consensusModuleAgent.onNewLeadershipTerm(
                     newLeadershipTermDecoder.logLeadershipTermId(),
-                    newLeadershipTermDecoder.logTruncatePosition(),
+                    newLeadershipTermDecoder.nextLeadershipTermId(),
+                    newLeadershipTermDecoder.nextTermBaseLogPosition(),
+                    newLeadershipTermDecoder.nextLogPosition(),
                     newLeadershipTermDecoder.leadershipTermId(),
+                    newLeadershipTermDecoder.termBaseLogPosition(),
                     newLeadershipTermDecoder.logPosition(),
+                    newLeadershipTermDecoder.leaderRecordingId(),
                     newLeadershipTermDecoder.timestamp(),
                     newLeadershipTermDecoder.leaderMemberId(),
                     newLeadershipTermDecoder.logSessionId(),
@@ -182,7 +187,8 @@ class ConsensusAdapter implements FragmentHandler, AutoCloseable
                 consensusModuleAgent.onCatchupPosition(
                     catchupPositionDecoder.leadershipTermId(),
                     catchupPositionDecoder.logPosition(),
-                    catchupPositionDecoder.followerMemberId());
+                    catchupPositionDecoder.followerMemberId(),
+                    catchupPositionDecoder.catchupEndpoint());
                 break;
 
             case StopCatchupDecoder.TEMPLATE_ID:

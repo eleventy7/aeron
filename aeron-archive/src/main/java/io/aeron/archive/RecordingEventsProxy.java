@@ -42,6 +42,9 @@ class RecordingEventsProxy implements AutoCloseable
         this.publication = publication;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void close()
     {
         CloseHelper.close(publication);
@@ -64,10 +67,11 @@ class RecordingEventsProxy implements AutoCloseable
             .channel(channel)
             .sourceIdentity(sourceIdentity);
 
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + recordingStartedEncoder.encodedLength();
         int attempts = SEND_ATTEMPTS;
         do
         {
-            final long result = publication.offer(buffer, 0, recordingStartedEncoder.encodedLength());
+            final long result = publication.offer(buffer, 0, length);
             if (result > 0 || Publication.NOT_CONNECTED == result)
             {
                 break;

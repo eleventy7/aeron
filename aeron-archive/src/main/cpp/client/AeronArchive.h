@@ -623,7 +623,7 @@ public:
             throw ArchiveException("failed to send stop recording request", SOURCEINFO);
         }
 
-        return pollForStopRecordingResponse<IdleStrategy>(m_lastCorrelationId);
+        return pollForResponseAllowingError<IdleStrategy>(m_lastCorrelationId);
     }
 
     /**
@@ -702,7 +702,7 @@ public:
             throw ArchiveException("failed to send stop recording request", SOURCEINFO);
         }
 
-        return pollForStopRecordingResponse<IdleStrategy>(m_lastCorrelationId);
+        return pollForResponseAllowingError<IdleStrategy>(m_lastCorrelationId);
     }
 
     /**
@@ -1327,6 +1327,61 @@ public:
      * archive. The source recording will be replayed via the provided replay channel and use the original stream id.
      * If the destination recording id is Aeron#NULL_VALUE then a new destination recording is created,
      * otherwise the provided destination recording id will be extended. The details of the source recording
+     * descriptor will be replicated.
+     * <p>
+     * For a source recording that is still active the replay can merge with the live stream and then follow it
+     * directly and no longer require the replay from the source. This would require a multicast live destination.
+     * <p>
+     * Errors will be reported asynchronously and can be checked for with AeronArchive#pollForErrorResponse()
+     * or AeronArchive#checkForErrorResponse(). Follow progress with RecordingSignalAdapter.
+     *
+     * @param srcRecordingId     recording id which must exist in the source archive.
+     * @param dstRecordingId     recording to extend in the destination, otherwise Aeron#NULL_VALUE.
+     * @param stopPosition       position to stop the replication.
+     * @param srcControlStreamId remote control stream id for the source archive to instruct the replay on.
+     * @param srcControlChannel  remote control channel for the source archive to instruct the replay on.
+     * @param liveDestination    destination for the live stream if merge is required. Empty string for no merge.
+     * @param replicationChannel channel over which the replication will occur. Empty or null for default channel.
+     * @tparam IdleStrategy      to use for polling operations.
+     */
+    template<typename IdleStrategy = aeron::concurrent::BackoffIdleStrategy>
+    inline void replicate(
+        std::int64_t srcRecordingId,
+        std::int64_t dstRecordingId,
+        std::int64_t stopPosition,
+        std::int32_t srcControlStreamId,
+        const std::string &srcControlChannel,
+        const std::string &liveDestination,
+        const std::string &replicationChannel)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_lock);
+        ensureOpen();
+        ensureNotReentrant();
+
+        m_lastCorrelationId = m_aeron->nextCorrelationId();
+
+        if (!m_archiveProxy->replicate<IdleStrategy>(
+            srcRecordingId,
+            dstRecordingId,
+            stopPosition,
+            srcControlStreamId,
+            srcControlChannel,
+            liveDestination,
+            replicationChannel,
+            m_lastCorrelationId,
+            m_controlSessionId))
+        {
+            throw ArchiveException("failed to send replicate request", SOURCEINFO);
+        }
+
+        pollForResponse<IdleStrategy>(m_lastCorrelationId);
+    }
+
+    /**
+     * Replicate a recording from a source archive to a destination which can be considered a backup for a primary
+     * archive. The source recording will be replayed via the provided replay channel and use the original stream id.
+     * If the destination recording id is Aeron#NULL_VALUE then a new destination recording is created,
+     * otherwise the provided destination recording id will be extended. The details of the source recording
      * descriptor will be replicated. The subscription used in the archive will be tagged with the provided tags.
      * <p>
      * For a source recording that is still active the replay can merge with the live stream and then follow it
@@ -1398,6 +1453,29 @@ public:
         }
 
         pollForResponse<IdleStrategy>(m_lastCorrelationId);
+    }
+
+    /**
+     * Try stopping a replication session by id.
+     *
+     * @param replicationId of replication session to be stopped.
+     * @tparam IdleStrategy to use for polling operations.
+     */
+    template<typename IdleStrategy = aeron::concurrent::BackoffIdleStrategy>
+    inline bool tryStopReplication(std::int64_t replicationId)
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_lock);
+        ensureOpen();
+        ensureNotReentrant();
+
+        m_lastCorrelationId = m_aeron->nextCorrelationId();
+
+        if (!m_archiveProxy->stopReplication<IdleStrategy>(replicationId, m_lastCorrelationId, m_controlSessionId))
+        {
+            throw ArchiveException("failed to send stop replication request", SOURCEINFO);
+        }
+
+        return pollForResponseAllowingError<IdleStrategy>(m_lastCorrelationId);
     }
 
     /**
@@ -1680,7 +1758,7 @@ private:
     }
 
     template<typename IdleStrategy>
-    inline bool pollForStopRecordingResponse(std::int64_t correlationId)
+    inline bool pollForResponseAllowingError(std::int64_t correlationId)
     {
         const long long deadlineNs = m_nanoClock() + m_messageTimeoutNs;
 

@@ -23,12 +23,14 @@ import org.agrona.concurrent.MessageHandler;
 import org.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Paths;
 
 import static io.aeron.agent.CommonEventDissector.dissectLogStartMessage;
-import static io.aeron.agent.EventConfiguration.*;
+import static io.aeron.agent.EventConfiguration.EVENT_READER_FRAME_LIMIT;
+import static io.aeron.agent.EventConfiguration.MAX_EVENT_LENGTH;
 import static java.lang.System.*;
 import static java.nio.channels.FileChannel.open;
 import static java.nio.file.StandardOpenOption.*;
@@ -45,24 +47,16 @@ public final class EventLogReaderAgent implements Agent
     /**
      * Event Buffer length system property name. If not set then output will default to {@link System#out}.
      */
-    public static final String LOG_FILENAME_PROP_NAME = "aeron.event.log.filename";
+    public static final String LOG_FILENAME_PROP_NAME = ConfigOption.LOG_FILENAME.propertyName();
 
     private final ManyToOneRingBuffer ringBuffer = EventConfiguration.EVENT_RING_BUFFER;
     private final StringBuilder builder = new StringBuilder();
     private final MessageHandler messageHandler = this::onMessage;
-    private ByteBuffer byteBuffer;
-    private FileChannel fileChannel = null;
+    private final ByteBuffer byteBuffer;
+    private final FileChannel fileChannel;
 
-    EventLogReaderAgent()
+    EventLogReaderAgent(final String filename)
     {
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    public void onStart()
-    {
-        final String filename = getProperty(LOG_FILENAME_PROP_NAME);
         if (null != filename)
         {
             try
@@ -71,12 +65,23 @@ public final class EventLogReaderAgent implements Agent
             }
             catch (final IOException ex)
             {
-                LangUtil.rethrowUnchecked(ex);
+                throw new UncheckedIOException(ex);
             }
 
             byteBuffer = allocateDirectAligned(MAX_EVENT_LENGTH * 2, CACHE_LINE_LENGTH);
         }
+        else
+        {
+            fileChannel = null;
+            byteBuffer = null;
+        }
+    }
 
+    /**
+     * {@inheritDoc}
+     */
+    public void onStart()
+    {
         dissectLogStartMessage(nanoTime(), currentTimeMillis(), systemDefault(), builder);
         builder.append(lineSeparator());
 
@@ -87,7 +92,7 @@ public final class EventLogReaderAgent implements Agent
         else
         {
             appendEvent(builder, byteBuffer, fileChannel);
-            writeBuffer(byteBuffer, fileChannel);
+            write(byteBuffer, fileChannel);
         }
     }
 
@@ -115,7 +120,7 @@ public final class EventLogReaderAgent implements Agent
         final int eventsRead = ringBuffer.read(messageHandler, EVENT_READER_FRAME_LIMIT);
         if (null != byteBuffer && byteBuffer.position() > 0)
         {
-            writeBuffer(byteBuffer, fileChannel);
+            write(byteBuffer, fileChannel);
         }
 
         return eventsRead;
@@ -128,6 +133,25 @@ public final class EventLogReaderAgent implements Agent
 
         builder.setLength(0);
 
+        decodeLogEvent(buffer, index, eventCodeTypeId, eventCodeId, builder);
+
+        if (null == fileChannel)
+        {
+            out.print(builder);
+        }
+        else
+        {
+            appendEvent(builder, byteBuffer, fileChannel);
+        }
+    }
+
+    static void decodeLogEvent(
+        final MutableDirectBuffer buffer,
+        final int index,
+        final int eventCodeTypeId,
+        final int eventCodeId,
+        final StringBuilder builder)
+    {
         if (DriverEventCode.EVENT_CODE_TYPE == eventCodeTypeId)
         {
             DriverEventCode.get(eventCodeId).decode(buffer, index, builder);
@@ -146,15 +170,6 @@ public final class EventLogReaderAgent implements Agent
         }
 
         builder.append(lineSeparator());
-
-        if (null == fileChannel)
-        {
-            out.print(builder);
-        }
-        else
-        {
-            appendEvent(builder, byteBuffer, fileChannel);
-        }
     }
 
     private static void appendEvent(final StringBuilder builder, final ByteBuffer buffer, final FileChannel fileChannel)
@@ -163,7 +178,7 @@ public final class EventLogReaderAgent implements Agent
 
         if (buffer.position() + length > buffer.capacity())
         {
-            writeBuffer(buffer, fileChannel);
+            write(buffer, fileChannel);
         }
 
         final int position = buffer.position();
@@ -176,7 +191,7 @@ public final class EventLogReaderAgent implements Agent
         buffer.position(position + length);
     }
 
-    private static void writeBuffer(final ByteBuffer buffer, final FileChannel fileChannel)
+    private static void write(final ByteBuffer buffer, final FileChannel fileChannel)
     {
         try
         {

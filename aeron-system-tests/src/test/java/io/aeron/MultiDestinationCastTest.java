@@ -26,10 +26,7 @@ import io.aeron.test.CountingFragmentHandler;
 import io.aeron.test.driver.MediaDriverTestWatcher;
 import io.aeron.test.driver.TestMediaDriver;
 import io.aeron.test.Tests;
-import org.agrona.CloseHelper;
-import org.agrona.DirectBuffer;
-import org.agrona.IoUtil;
-import org.agrona.SystemUtil;
+import org.agrona.*;
 import org.agrona.collections.MutableInteger;
 import org.agrona.collections.MutableLong;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -67,7 +64,7 @@ public class MultiDestinationCastTest
     private static final int MESSAGES_PER_TERM = 64;
     private static final int MESSAGE_LENGTH =
         (TERM_BUFFER_LENGTH / MESSAGES_PER_TERM) - DataHeaderFlyweight.HEADER_LENGTH;
-    private static final String ROOT_DIR = SystemUtil.tmpDirName() + "aeron-system-tests" + File.separator;
+    private static final String ROOT_DIR = CommonContext.getAeronDirectoryName() + File.separator;
     private static final int FRAGMENT_LIMIT = 10;
 
     private final MediaDriver.Context driverBContext = new MediaDriver.Context();
@@ -89,7 +86,7 @@ public class MultiDestinationCastTest
     @RegisterExtension
     public final MediaDriverTestWatcher testWatcher = new MediaDriverTestWatcher();
 
-    private void launch()
+    private void launch(final ErrorHandler errorHandler)
     {
         final String baseDirA = ROOT_DIR + "A";
         final String baseDirB = ROOT_DIR + "B";
@@ -97,13 +94,13 @@ public class MultiDestinationCastTest
         buffer.putInt(0, 1);
 
         final MediaDriver.Context driverAContext = new MediaDriver.Context()
-            .errorHandler(Tests::onError)
+            .errorHandler(errorHandler)
             .publicationTermBufferLength(TERM_BUFFER_LENGTH)
             .aeronDirectoryName(baseDirA)
             .threadingMode(ThreadingMode.SHARED);
 
         driverBContext.publicationTermBufferLength(TERM_BUFFER_LENGTH)
-            .errorHandler(Tests::onError)
+            .errorHandler(errorHandler)
             .aeronDirectoryName(baseDirB)
             .threadingMode(ThreadingMode.SHARED);
 
@@ -124,7 +121,7 @@ public class MultiDestinationCastTest
     @Timeout(10)
     public void shouldSpinUpAndShutdownWithDynamic()
     {
-        launch();
+        launch(Tests::onError);
 
         publication = clientA.addPublication(PUB_MDC_DYNAMIC_URI, STREAM_ID);
         subscriptionA = clientA.addSubscription(SUB1_MDC_DYNAMIC_URI, STREAM_ID);
@@ -141,7 +138,7 @@ public class MultiDestinationCastTest
     @Timeout(10)
     public void shouldSpinUpAndShutdownWithManual()
     {
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_MANUAL_URI, STREAM_ID);
         subscriptionB = clientB.addSubscription(SUB2_MDC_MANUAL_URI, STREAM_ID);
@@ -165,7 +162,7 @@ public class MultiDestinationCastTest
     {
         final int numMessagesToSend = MESSAGES_PER_TERM * 3;
 
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_DYNAMIC_URI, STREAM_ID);
         subscriptionB = clientB.addSubscription(SUB2_MDC_DYNAMIC_URI, STREAM_ID);
@@ -200,7 +197,7 @@ public class MultiDestinationCastTest
     {
         final int numMessagesToSend = MESSAGES_PER_TERM * 3;
 
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_DYNAMIC_URI, STREAM_ID);
         subscriptionB = clientA.addSubscription(SUB2_MDC_DYNAMIC_URI, STREAM_ID);
@@ -235,7 +232,7 @@ public class MultiDestinationCastTest
     {
         final int numMessagesToSend = MESSAGES_PER_TERM * 3;
 
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_MANUAL_URI, STREAM_ID);
         subscriptionB = clientA.addSubscription(SUB2_MDC_MANUAL_URI, STREAM_ID);
@@ -268,7 +265,9 @@ public class MultiDestinationCastTest
     @Timeout(10)
     public void addDestinationWithSpySubscriptionsShouldFailWithRegistrationException()
     {
-        launch();
+        final ErrorHandler mockErrorHandler = mock(ErrorHandler.class);
+        launch(mockErrorHandler);
+
         publication = clientA.addPublication(PUB_MDC_MANUAL_URI, STREAM_ID);
         final RegistrationException registrationException = assertThrows(
             RegistrationException.class,
@@ -276,7 +275,6 @@ public class MultiDestinationCastTest
 
         assertThat(registrationException.getMessage(), containsString("spies are invalid"));
     }
-
 
     @Test
     @Timeout(10)
@@ -288,7 +286,7 @@ public class MultiDestinationCastTest
 
         driverBContext.imageLivenessTimeoutNs(TimeUnit.MILLISECONDS.toNanos(500));
 
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_MANUAL_URI, STREAM_ID);
         subscriptionB = clientB.addSubscription(
@@ -350,7 +348,7 @@ public class MultiDestinationCastTest
         final Supplier<String> positionSupplier =
             () -> "Failed to publish, position: " + position + ", sent: " + messagesSent;
 
-        launch();
+        launch(Tests::onError);
 
         subscriptionA = clientA.addSubscription(SUB1_MDC_MANUAL_URI, STREAM_ID);
         subscriptionB = clientB.addSubscription(
@@ -371,7 +369,7 @@ public class MultiDestinationCastTest
             }
             else
             {
-                Tests.yieldingWait(positionSupplier);
+                Tests.yieldingIdle(positionSupplier);
             }
 
             subscriptionA.poll(fragmentHandlerA, FRAGMENT_LIMIT);
@@ -390,7 +388,7 @@ public class MultiDestinationCastTest
                 {
                     if (subscriptionA.poll(fragmentHandlerA, FRAGMENT_LIMIT) <= 0)
                     {
-                        Tests.yieldingWait(messageSupplierA);
+                        Tests.yieldingIdle(messageSupplierA);
                     }
                 }
 
@@ -404,13 +402,13 @@ public class MultiDestinationCastTest
             if (fragmentHandlerA.notDone(numMessagesToSend) &&
                 subscriptionA.poll(fragmentHandlerA, FRAGMENT_LIMIT) <= 0)
             {
-                Tests.yieldingWait(messageSupplierA);
+                Tests.yieldingIdle(messageSupplierA);
             }
 
             if (fragmentHandlerB.notDone(numMessageForSub2) &&
                 subscriptionB.poll(fragmentHandlerB, FRAGMENT_LIMIT) <= 0)
             {
-                Tests.yieldingWait(messageSupplierB);
+                Tests.yieldingIdle(messageSupplierB);
             }
         }
     }

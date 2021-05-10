@@ -15,8 +15,10 @@
  */
 package io.aeron.cluster;
 
+import io.aeron.CommonContext;
 import io.aeron.ExclusivePublication;
 import io.aeron.Publication;
+import io.aeron.cluster.client.ClusterException;
 import io.aeron.cluster.codecs.*;
 import io.aeron.exceptions.AeronException;
 import io.aeron.logbuffer.BufferClaim;
@@ -51,6 +53,7 @@ final class ConsensusPublisher
         final ExclusivePublication publication,
         final long logLeadershipTermId,
         final long logPosition,
+        final long leadershipTermId,
         final int followerMemberId)
     {
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + CanvassPositionEncoder.BLOCK_LENGTH;
@@ -65,6 +68,7 @@ final class ConsensusPublisher
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
                     .logLeadershipTermId(logLeadershipTermId)
                     .logPosition(logPosition)
+                    .leadershipTermId(leadershipTermId)
                     .followerMemberId(followerMemberId);
 
                 bufferClaim.commit();
@@ -150,14 +154,23 @@ final class ConsensusPublisher
     void newLeadershipTerm(
         final ExclusivePublication publication,
         final long logLeadershipTermId,
-        final long logTruncatePosition,
+        final long nextLeadershipTermId,
+        final long nextTermBaseLogPosition,
+        final long nextLogPosition,
         final long leadershipTermId,
+        final long termBaseLogPosition,
         final long logPosition,
+        final long leaderRecordingId,
         final long timestamp,
         final int leaderMemberId,
         final int logSessionId,
         final boolean isStartup)
     {
+        if (CommonContext.NULL_SESSION_ID == logSessionId)
+        {
+            throw new ClusterException("logSessionId was null, should always have a value");
+        }
+
         final int length = MessageHeaderEncoder.ENCODED_LENGTH + NewLeadershipTermEncoder.BLOCK_LENGTH;
 
         int attempts = SEND_ATTEMPTS;
@@ -169,9 +182,13 @@ final class ConsensusPublisher
                 newLeadershipTermEncoder
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
                     .logLeadershipTermId(logLeadershipTermId)
-                    .logTruncatePosition(logTruncatePosition)
+                    .nextLeadershipTermId(nextLeadershipTermId)
+                    .nextTermBaseLogPosition(nextTermBaseLogPosition)
+                    .nextLogPosition(nextLogPosition)
                     .leadershipTermId(leadershipTermId)
+                    .termBaseLogPosition(termBaseLogPosition)
                     .logPosition(logPosition)
+                    .leaderRecordingId(leaderRecordingId)
                     .timestamp(timestamp)
                     .leaderMemberId(leaderMemberId)
                     .logSessionId(logSessionId)
@@ -253,9 +270,14 @@ final class ConsensusPublisher
         final ExclusivePublication publication,
         final long leadershipTermId,
         final long logPosition,
-        final int followerMemberId)
+        final int followerMemberId,
+        final String catchupEndpoint)
     {
-        final int length = MessageHeaderEncoder.ENCODED_LENGTH + CatchupPositionEncoder.BLOCK_LENGTH;
+        final int length =
+            MessageHeaderEncoder.ENCODED_LENGTH +
+            CatchupPositionEncoder.BLOCK_LENGTH +
+            CatchupPositionEncoder.catchupEndpointHeaderLength() +
+            catchupEndpoint.length();
 
         int attempts = SEND_ATTEMPTS;
         do
@@ -267,7 +289,8 @@ final class ConsensusPublisher
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
                     .leadershipTermId(leadershipTermId)
                     .logPosition(logPosition)
-                    .followerMemberId(followerMemberId);
+                    .followerMemberId(followerMemberId)
+                    .catchupEndpoint(catchupEndpoint);
 
                 bufferClaim.commit();
 
@@ -557,25 +580,20 @@ final class ConsensusPublisher
     }
 
     boolean backupResponse(
-        final Publication publication,
-        final long correlationId,
-        final long logRecordingId,
-        final long logLeadershipTermId,
-        final long logTermBaseLogPosition,
-        final long lastLeadershipTermId,
-        final long lastTermBaseLogPosition,
+        final ClusterSession session,
         final int commitPositionCounterId,
         final int leaderMemberId,
+        final RecordingLog.Entry lastEntry,
         final RecordingLog.RecoveryPlan recoveryPlan,
         final String clusterMembers)
     {
         backupResponseEncoder.wrapAndApplyHeader(buffer, 0, messageHeaderEncoder)
-            .correlationId(correlationId)
-            .logRecordingId(logRecordingId)
-            .logLeadershipTermId(logLeadershipTermId)
-            .logTermBaseLogPosition(logTermBaseLogPosition)
-            .lastLeadershipTermId(lastLeadershipTermId)
-            .lastTermBaseLogPosition(lastTermBaseLogPosition)
+            .correlationId(session.correlationId())
+            .logRecordingId(recoveryPlan.log.recordingId)
+            .logLeadershipTermId(recoveryPlan.log.leadershipTermId)
+            .logTermBaseLogPosition(recoveryPlan.log.termBaseLogPosition)
+            .lastLeadershipTermId(lastEntry.leadershipTermId)
+            .lastTermBaseLogPosition(lastEntry.termBaseLogPosition)
             .commitPositionCounterId(commitPositionCounterId)
             .leaderMemberId(leaderMemberId);
 
@@ -601,7 +619,7 @@ final class ConsensusPublisher
         int attempts = SEND_ATTEMPTS;
         do
         {
-            final long result = publication.offer(buffer, 0, length);
+            final long result = session.responsePublication().offer(buffer, 0, length);
             if (result > 0)
             {
                 return true;

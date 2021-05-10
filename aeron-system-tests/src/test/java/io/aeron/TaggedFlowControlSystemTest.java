@@ -21,6 +21,7 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
+import io.aeron.test.SlowTest;
 import io.aeron.test.driver.MediaDriverTestWatcher;
 import io.aeron.test.driver.TestMediaDriver;
 import io.aeron.test.Tests;
@@ -203,11 +204,11 @@ public class TaggedFlowControlSystemTest
                 }
                 else
                 {
-                    Tests.yieldingWait(state::toString);
+                    Tests.yieldingIdle(state::toString);
                 }
             }
 
-            Tests.yieldingWait(state::toString);
+            Tests.yieldingIdle(state::toString);
 
             // A keeps up
             pollWithTimeout(subscriptionA, fragmentHandlerA, 10, state::toString);
@@ -268,7 +269,7 @@ public class TaggedFlowControlSystemTest
                 }
                 else
                 {
-                    Tests.yieldingWait("position: %d, state: %s", position, state);
+                    Tests.yieldingIdle("position: %d, state: %s", position, state);
                 }
             }
 
@@ -301,13 +302,14 @@ public class TaggedFlowControlSystemTest
         final int numFragments = subscription.poll(fragmentHandler, fragmentLimit);
         if (0 == numFragments)
         {
-            Tests.yieldingWait(message);
+            Tests.yieldingIdle(message);
         }
 
         return numFragments;
     }
 
     @SuppressWarnings("methodlength")
+    @SlowTest
     @Test
     @Timeout(20)
     void shouldPreventConnectionUntilRequiredGroupSizeMatchTagIsMet()

@@ -61,6 +61,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     private long logPosition = NULL_POSITION;
 
     private final IdleStrategy idleStrategy;
+    private final ClusterMarkFile markFile;
     private final ClusteredServiceContainer.Context ctx;
     private final Aeron aeron;
     private final AgentInvoker aeronAgentInvoker;
@@ -72,7 +73,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
         new byte[Configuration.MAX_UDP_PAYLOAD_LENGTH - DataHeaderFlyweight.HEADER_LENGTH]);
     private final DirectBufferVector headerVector = new DirectBufferVector(headerBuffer, 0, SESSION_HEADER_LENGTH);
     private final SessionMessageHeaderEncoder sessionMessageHeaderEncoder = new SessionMessageHeaderEncoder();
-    private final Long2ObjectHashMap<ClientSession> sessionByIdMap = new Long2ObjectHashMap<>();
+    private final Long2ObjectHashMap<ContainerClientSession> sessionByIdMap = new Long2ObjectHashMap<>();
     private final Collection<ClientSession> unmodifiableClientSessions =
         new UnmodifiableClientSessionCollection(sessionByIdMap.values());
     private final BoundedLogAdapter logAdapter;
@@ -87,6 +88,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
         logAdapter = new BoundedLogAdapter(this, ctx.logFragmentLimit());
         this.ctx = ctx;
 
+        markFile = ctx.clusterMarkFile();
         aeron = ctx.aeron();
         aeronAgentInvoker = ctx.aeron().conductorAgentInvoker();
         service = ctx.clusteredService();
@@ -135,7 +137,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
 
             if (!ctx.ownsAeronClient() && !aeron.isClosed())
             {
-                for (final ClientSession session : sessionByIdMap.values())
+                for (final ContainerClientSession session : sessionByIdMap.values())
                 {
                     session.disconnect(errorHandler);
                 }
@@ -146,6 +148,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
             }
         }
 
+        markFile.updateActivityTimestamp(NULL_VALUE);
         ctx.close();
     }
 
@@ -217,7 +220,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     {
         checkForLifecycleCallback();
 
-        final ClientSession clientSession = sessionByIdMap.get(clusterSessionId);
+        final ContainerClientSession clientSession = sessionByIdMap.get(clusterSessionId);
         if (clientSession == null)
         {
             throw new ClusterException("unknown clusterSessionId: " + clusterSessionId);
@@ -325,7 +328,6 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     }
 
     void onJoinLog(
-        final long leadershipTermId,
         final long logPosition,
         final long maxLogPosition,
         final int memberId,
@@ -337,7 +339,6 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     {
         logAdapter.maxLogPosition(logPosition);
         activeLogEvent = new ActiveLogEvent(
-            leadershipTermId,
             logPosition,
             maxLogPosition,
             memberId,
@@ -394,7 +395,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
                 " leadershipTermId=" + leadershipTermId + " logPosition=" + logPosition);
         }
 
-        final ClientSession session = new ClientSession(
+        final ContainerClientSession session = new ContainerClientSession(
             clusterSessionId, responseStreamId, responseChannel, encodedPrincipal, this);
 
         if (Role.LEADER == role && ctx.isRespondingService())
@@ -415,7 +416,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     {
         this.logPosition = logPosition;
         clusterTime = timestamp;
-        final ClientSession session = sessionByIdMap.remove(clusterSessionId);
+        final ContainerClientSession session = sessionByIdMap.remove(clusterSessionId);
 
         if (null == session)
         {
@@ -451,7 +452,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
             ctx.errorHandler().onError(new ClusterException(
                 "incompatible version: " + SemanticVersion.toString(ctx.appVersion()) +
                 " log=" + SemanticVersion.toString(appVersion)));
-            ctx.terminationHook().run();
+            terminateAgent();
         }
         else
         {
@@ -490,7 +491,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
         final String responseChannel,
         final byte[] encodedPrincipal)
     {
-        sessionByIdMap.put(clusterSessionId, new ClientSession(
+        sessionByIdMap.put(clusterSessionId, new ContainerClientSession(
             clusterSessionId, responseStreamId, responseChannel, encodedPrincipal, this));
     }
 
@@ -662,7 +663,7 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
     {
         if (Role.LEADER != activeLog.role)
         {
-            for (final ClientSession session : sessionByIdMap.values())
+            for (final ContainerClientSession session : sessionByIdMap.values())
             {
                 session.disconnect(ctx.countedErrorHandler());
             }
@@ -688,11 +689,11 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
         }
 
         memberId = activeLog.memberId;
-        ctx.clusterMarkFile().memberId(memberId);
+        markFile.memberId(memberId);
 
         if (Role.LEADER == activeLog.role)
         {
-            for (final ClientSession session : sessionByIdMap.values())
+            for (final ContainerClientSession session : sessionByIdMap.values())
             {
                 if (ctx.isRespondingService() && !activeLog.isStartup)
                 {
@@ -904,8 +905,8 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
 
             if (nowMs >= markFileUpdateDeadlineMs)
             {
-                ctx.clusterMarkFile().updateActivityTimestamp(nowMs);
                 markFileUpdateDeadlineMs = nowMs + MARK_FILE_UPDATE_INTERVAL_MS;
+                markFile.updateActivityTimestamp(nowMs);
             }
 
             return true;
@@ -967,7 +968,20 @@ final class ClusteredServiceAgent implements Agent, Cluster, IdleStrategy
         }
 
         terminationPosition = NULL_VALUE;
-        ctx.terminationHook().run();
+        terminateAgent();
+    }
+
+    private void terminateAgent()
+    {
+        try
+        {
+            ctx.terminationHook().run();
+        }
+        catch (final Throwable ex)
+        {
+            ctx.countedErrorHandler().onError(ex);
+        }
+
         throw new ClusterTerminationException();
     }
 

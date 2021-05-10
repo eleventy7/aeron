@@ -17,28 +17,23 @@ package io.aeron.cluster;
 
 import io.aeron.*;
 import io.aeron.archive.client.*;
-import io.aeron.archive.codecs.*;
-import io.aeron.cluster.client.ClusterException;
+import io.aeron.archive.codecs.RecordingSignal;
+import io.aeron.archive.status.RecordingPos;
 import io.aeron.cluster.codecs.SnapshotRecordingsDecoder;
 import org.agrona.CloseHelper;
 import org.agrona.ErrorHandler;
-import org.agrona.collections.LongArrayList;
-import org.agrona.concurrent.NoOpLock;
 
 import java.util.ArrayList;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.CommonContext.ENDPOINT_PARAM_NAME;
-import static io.aeron.archive.client.AeronArchive.NULL_LENGTH;
-import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
 
-class DynamicJoin implements AutoCloseable
+final class DynamicJoin
 {
     enum State
     {
         INIT,
         PASSIVE_FOLLOWER,
-        SNAPSHOT_LENGTH_RETRIEVE,
         SNAPSHOT_RETRIEVE,
         SNAPSHOT_LOAD,
         JOIN_CLUSTER,
@@ -52,19 +47,14 @@ class DynamicJoin implements AutoCloseable
     private final String[] clusterConsensusEndpoints;
     private final String consensusEndpoints;
     private final String consensusEndpoint;
-    private final String catchupEndpoint;
-    private final String archiveEndpoint;
     private final ArrayList<RecordingLog.Snapshot> leaderSnapshots = new ArrayList<>();
-    private final LongArrayList snapshotLengths = new LongArrayList();
     private final long intervalNs;
 
     private ExclusivePublication consensusPublication;
     private State state = State.INIT;
     private ClusterMember[] clusterMembers;
     private ClusterMember leaderMember;
-    private AeronArchive.AsyncConnect leaderArchiveAsyncConnect;
-    private AeronArchive leaderArchive;
-    private SnapshotRetrieveMonitor snapshotRetrieveMonitor;
+    private SnapshotReplication snapshotReplication;
     private Counter recoveryStateCounter;
     private long timeOfLastActivityNs = 0;
     private long correlationId = NULL_VALUE;
@@ -88,15 +78,17 @@ class DynamicJoin implements AutoCloseable
         this.intervalNs = ctx.dynamicJoinIntervalNs();
         this.consensusEndpoints = ctx.memberEndpoints();
         this.consensusEndpoint = thisMember.consensusEndpoint();
-        this.catchupEndpoint = thisMember.catchupEndpoint();
-        this.archiveEndpoint = thisMember.archiveEndpoint();
         this.clusterConsensusEndpoints = consensusEndpoints.split(",");
     }
 
-    public void close()
+    void close()
     {
         final ErrorHandler countedErrorHandler = ctx.countedErrorHandler();
-        CloseHelper.closeAll(countedErrorHandler, consensusPublication, leaderArchive, leaderArchiveAsyncConnect);
+        CloseHelper.closeAll(countedErrorHandler, consensusPublication);
+        if (null != snapshotReplication)
+        {
+            snapshotReplication.close(localArchive);
+        }
     }
 
     ClusterMember[] clusterMembers()
@@ -126,10 +118,6 @@ class DynamicJoin implements AutoCloseable
 
             case PASSIVE_FOLLOWER:
                 workCount += passiveFollower(nowNs);
-                break;
-
-            case SNAPSHOT_LENGTH_RETRIEVE:
-                workCount += snapshotLengthRetrieve();
                 break;
 
             case SNAPSHOT_RETRIEVE:
@@ -218,17 +206,17 @@ class DynamicJoin implements AutoCloseable
             }
             else
             {
-                final AeronArchive.Context leaderArchiveCtx = new AeronArchive.Context()
-                    .aeron(ctx.aeron())
-                    .lock(NoOpLock.INSTANCE)
-                    .controlRequestChannel("aeron:udp?term-length=64k|endpoint=" + leaderMember.archiveEndpoint())
-                    .controlRequestStreamId(ctx.archiveContext().controlRequestStreamId())
-                    .controlResponseChannel("aeron:udp?endpoint=" + archiveEndpoint)
-                    .controlResponseStreamId(ctx.archiveContext().controlResponseStreamId());
-
-                leaderArchiveAsyncConnect = AeronArchive.asyncConnect(leaderArchiveCtx);
-                state(State.SNAPSHOT_LENGTH_RETRIEVE);
+                state(State.SNAPSHOT_RETRIEVE);
             }
+        }
+    }
+
+    void onRecordingSignal(
+        final long correlationId, final long recordingId, final long position, final RecordingSignal signal)
+    {
+        if (null != snapshotReplication)
+        {
+            snapshotReplication.onSignal(correlationId, recordingId, position, signal);
         }
     }
 
@@ -284,116 +272,57 @@ class DynamicJoin implements AutoCloseable
         return 0;
     }
 
-    private int snapshotLengthRetrieve()
-    {
-        int workCount = 0;
-
-        if (null == leaderArchive)
-        {
-            leaderArchive = leaderArchiveAsyncConnect.poll();
-            return null == leaderArchive ? 0 : 1;
-        }
-
-        if (NULL_VALUE == correlationId)
-        {
-            final long stopPositionCorrelationId = ctx.aeron().nextCorrelationId();
-            final RecordingLog.Snapshot snapshot = leaderSnapshots.get(snapshotCursor);
-
-            if (leaderArchive.archiveProxy().getStopPosition(
-                snapshot.recordingId,
-                stopPositionCorrelationId,
-                leaderArchive.controlSessionId()))
-            {
-                correlationId = stopPositionCorrelationId;
-                workCount++;
-            }
-        }
-        else if (pollForResponse(leaderArchive, correlationId))
-        {
-            correlationId = NULL_VALUE;
-            final long snapshotStopPosition = leaderArchive.controlResponsePoller().relevantId();
-
-            if (NULL_POSITION == snapshotStopPosition)
-            {
-                throw new ClusterException("snapshot stopPosition is NULL_POSITION");
-            }
-
-            snapshotLengths.addLong(snapshotCursor, snapshotStopPosition);
-            if (++snapshotCursor >= leaderSnapshots.size())
-            {
-                snapshotCursor = 0;
-                state(State.SNAPSHOT_RETRIEVE);
-            }
-
-            workCount++;
-        }
-
-        return workCount;
-    }
-
     private int snapshotRetrieve()
     {
         int workCount = 0;
 
-        if (null == leaderArchive)
+        if (null == snapshotReplication)
         {
-            leaderArchive = leaderArchiveAsyncConnect.poll();
-            return null == leaderArchive ? 0 : 1;
+            final long replicationId = localArchive.replicate(
+                leaderSnapshots.get(snapshotCursor).recordingId,
+                RecordingPos.NULL_RECORDING_ID,
+                AeronArchive.NULL_LENGTH,
+                ctx.archiveContext().controlRequestStreamId(),
+                "aeron:udp?term-length=64k|endpoint=" + leaderMember.archiveEndpoint(),
+                null,
+                ctx.replicationChannel());
+
+            snapshotReplication = new SnapshotReplication(replicationId, true);
+            workCount++;
         }
-
-        if (null != snapshotRetrieveMonitor)
+        else
         {
-            workCount += snapshotRetrieveMonitor.poll();
-            if (snapshotRetrieveMonitor.isDone())
+            workCount += consensusModuleAgent.pollArchiveEvents();
+            if (snapshotReplication.isDone())
             {
-                consensusModuleAgent.retrievedSnapshot(
-                    snapshotRetrieveMonitor.recordingId(), leaderSnapshots.get(snapshotCursor));
-
-                snapshotRetrieveMonitor = null;
-                correlationId = NULL_VALUE;
-
-                if (++snapshotCursor >= leaderSnapshots.size())
+                if (snapshotReplication.isComplete())
                 {
-                    state(State.SNAPSHOT_LOAD);
+                    consensusModuleAgent.retrievedSnapshot(
+                        snapshotReplication.recordingId(), leaderSnapshots.get(snapshotCursor));
+
+                    snapshotReplication = null;
+
+                    if (++snapshotCursor >= leaderSnapshots.size())
+                    {
+                        state(State.SNAPSHOT_LOAD);
+                        workCount++;
+                    }
+                }
+                else
+                {
+                    final long replicationId = localArchive.replicate(
+                        leaderSnapshots.get(snapshotCursor).recordingId,
+                        snapshotReplication.recordingId(),
+                        AeronArchive.NULL_LENGTH,
+                        ctx.archiveContext().controlRequestStreamId(),
+                        "aeron:udp?term-length=64k|endpoint=" + leaderMember.archiveEndpoint(),
+                        null,
+                        ctx.replicationChannel());
+
+                    snapshotReplication = new SnapshotReplication(replicationId, false);
                     workCount++;
                 }
             }
-        }
-        else if (NULL_VALUE == correlationId)
-        {
-            final long replayId = ctx.aeron().nextCorrelationId();
-            final RecordingLog.Snapshot snapshot = leaderSnapshots.get(snapshotCursor);
-            final String catchupChannel = "aeron:udp?endpoint=" + catchupEndpoint;
-
-            if (leaderArchive.archiveProxy().replay(
-                snapshot.recordingId,
-                0,
-                NULL_LENGTH,
-                catchupChannel,
-                ctx.replayStreamId(),
-                replayId,
-                leaderArchive.controlSessionId()))
-            {
-                correlationId = replayId;
-                workCount++;
-            }
-        }
-        else if (pollForResponse(leaderArchive, correlationId))
-        {
-            final int replaySessionId = (int)leaderArchive.controlResponsePoller().relevantId();
-            final String catchupChannel = "aeron:udp?endpoint=" + catchupEndpoint + "|session-id=" + replaySessionId;
-
-            snapshotRetrieveMonitor = new SnapshotRetrieveMonitor(localArchive, snapshotLengths.get(snapshotCursor));
-
-            localArchive.archiveProxy().startRecording(
-                catchupChannel,
-                ctx.replayStreamId(),
-                SourceLocation.REMOTE,
-                true,
-                localArchive.context().aeron().nextCorrelationId(),
-                localArchive.controlSessionId());
-
-            workCount++;
         }
 
         return workCount;
@@ -441,26 +370,6 @@ class DynamicJoin implements AutoCloseable
     {
         //System.out.println("DynamicJoin: memberId=" + memberId + " " + state + " -> " + newState);
         state = newState;
-    }
-
-    private static boolean pollForResponse(final AeronArchive archive, final long correlationId)
-    {
-        final ControlResponsePoller poller = archive.controlResponsePoller();
-
-        if (poller.poll() > 0 && poller.isPollComplete())
-        {
-            if (poller.controlSessionId() == archive.controlSessionId() && poller.correlationId() == correlationId)
-            {
-                if (poller.code() == ControlResponseCode.ERROR)
-                {
-                    throw new ClusterException(
-                        "archive response for correlationId=" + correlationId + ", error: " + poller.errorMessage());
-                }
-
-                return true;
-            }
-        }
-
-        return false;
+        correlationId = NULL_VALUE;
     }
 }

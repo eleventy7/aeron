@@ -15,6 +15,7 @@
  */
 package io.aeron.test.cluster;
 
+import io.aeron.Publication;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.service.ClusterTerminationException;
 import io.aeron.exceptions.AeronException;
@@ -22,6 +23,7 @@ import org.agrona.ErrorHandler;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.LangUtil;
 import org.agrona.SystemUtil;
+import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.AgentTerminationException;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
@@ -70,20 +72,22 @@ public class ClusterTests
             {
                 if (ex instanceof AeronException && ((AeronException)ex).category() == AeronException.Category.WARN)
                 {
+                    //System.err.println("\n *** Warning in member " + memberId + " \n");
+                    //ex.printStackTrace();
                     addWarning(ex);
                     return;
                 }
 
                 if (ex instanceof ClusterTerminationException)
                 {
-                    addWarning(ex);
                     return;
                 }
 
                 addError(ex);
 
-                System.err.println("\n*** Error in member " + memberId + " followed by system thread dump ***\n\n");
+                System.err.println("\n*** Error in member " + memberId + " ***\n\n");
                 ex.printStackTrace();
+                printWarning();
 
                 System.err.println();
                 System.err.println(SystemUtil.threadDump());
@@ -149,7 +153,8 @@ public class ClusterTests
         }
     }
 
-    public static Thread startPublisherThread(final TestCluster testCluster, final long backoffIntervalNs)
+    public static Thread startPublisherThread(
+        final TestCluster testCluster, final MutableInteger messageCounter, final long backoffIntervalNs)
     {
         final Thread thread = new Thread(
             () ->
@@ -161,8 +166,17 @@ public class ClusterTests
 
                 while (!Thread.interrupted())
                 {
-                    if (client.offer(msgBuffer, 0, HELLO_WORLD_MSG.length()) < 0)
+                    final long result = client.offer(msgBuffer, 0, HELLO_WORLD_MSG.length());
+                    if (result > 0)
                     {
+                        messageCounter.increment();
+                    }
+                    else
+                    {
+                        if (Publication.CLOSED == result)
+                        {
+                            break;
+                        }
                         LockSupport.parkNanos(backoffIntervalNs);
                     }
 

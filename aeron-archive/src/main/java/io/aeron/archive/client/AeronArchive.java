@@ -766,7 +766,7 @@ public final class AeronArchive implements AutoCloseable
                 throw new ArchiveException("failed to send stop recording request");
             }
 
-            return pollForStopRecordingResponse(lastCorrelationId);
+            return pollForResponseAllowingError(lastCorrelationId, ArchiveException.UNKNOWN_SUBSCRIPTION);
         }
         finally
         {
@@ -827,7 +827,7 @@ public final class AeronArchive implements AutoCloseable
                 throw new ArchiveException("failed to send stop recording request");
             }
 
-            return pollForStopRecordingResponse(lastCorrelationId);
+            return pollForResponseAllowingError(lastCorrelationId, ArchiveException.UNKNOWN_SUBSCRIPTION);
         }
         finally
         {
@@ -1561,6 +1561,70 @@ public final class AeronArchive implements AutoCloseable
      * archive. The source recording will be replayed via the provided replay channel and use the original stream id.
      * If the destination recording id is {@link io.aeron.Aeron#NULL_VALUE} then a new destination recording is created,
      * otherwise the provided destination recording id will be extended. The details of the source recording
+     * descriptor will be replicated.
+     * <p>
+     * For a source recording that is still active the replay can merge with the live stream and then follow it
+     * directly and no longer require the replay from the source. This would require a multicast live destination.
+     * <p>
+     * Errors will be reported asynchronously and can be checked for with {@link AeronArchive#pollForErrorResponse()}
+     * or {@link AeronArchive#checkForErrorResponse()}. Follow progress with {@link RecordingSignalAdapter}.
+     * <p>
+     * Stop recording this stream when the position of the destination reaches the specified stop position.
+     *
+     * @param srcRecordingId     recording id which must exist in the source archive.
+     * @param dstRecordingId     recording to extend in the destination, otherwise {@link io.aeron.Aeron#NULL_VALUE}.
+     * @param stopPosition       position to stop the replication. {@link AeronArchive#NULL_POSITION} to stop at end
+     *                           of current recording.
+     * @param srcControlStreamId remote control stream id for the source archive to instruct the replay on.
+     * @param srcControlChannel  remote control channel for the source archive to instruct the replay on.
+     * @param liveDestination    destination for the live stream if merge is required. Empty or null for no merge.
+     * @param replicationChannel channel over which the replication will occur. Empty or null for default channel.
+     * @return return the replication session id which can be passed later to {@link #stopReplication(long)}.
+     */
+    public long replicate(
+        final long srcRecordingId,
+        final long dstRecordingId,
+        final long stopPosition,
+        final int srcControlStreamId,
+        final String srcControlChannel,
+        final String liveDestination,
+        final String replicationChannel)
+    {
+        lock.lock();
+        try
+        {
+            ensureOpen();
+            ensureNotReentrant();
+
+            lastCorrelationId = aeron.nextCorrelationId();
+
+            if (!archiveProxy.replicate(
+                srcRecordingId,
+                dstRecordingId,
+                stopPosition,
+                srcControlStreamId,
+                srcControlChannel,
+                liveDestination,
+                replicationChannel,
+                lastCorrelationId,
+                controlSessionId))
+            {
+                throw new ArchiveException("failed to send replicate request");
+            }
+
+            return pollForResponse(lastCorrelationId);
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Replicate a recording from a source archive to a destination which can be considered a backup for a primary
+     * archive. The source recording will be replayed via the provided replay channel and use the original stream id.
+     * If the destination recording id is {@link io.aeron.Aeron#NULL_VALUE} then a new destination recording is created,
+     * otherwise the provided destination recording id will be extended. The details of the source recording
      * descriptor will be replicated. The subscription used in the archive will be tagged with the provided tags.
      * <p>
      * For a source recording that is still active the replay can merge with the live stream and then follow it
@@ -1639,6 +1703,37 @@ public final class AeronArchive implements AutoCloseable
             }
 
             pollForResponse(lastCorrelationId);
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+
+
+    /**
+     * Attempt to stop a replication session by id returned from {@link #replicate(long, long, int, String, String)}.
+     *
+     * @param replicationId to stop replication for.
+     * @return true if the replication was stopped, false if the replication is not active.
+     * @see #replicate(long, long, int, String, String)
+     */
+    public boolean tryStopReplication(final long replicationId)
+    {
+        lock.lock();
+        try
+        {
+            ensureOpen();
+            ensureNotReentrant();
+
+            lastCorrelationId = aeron.nextCorrelationId();
+
+            if (!archiveProxy.stopReplication(replicationId, lastCorrelationId, controlSessionId))
+            {
+                throw new ArchiveException("failed to send stop replication request");
+            }
+
+            return pollForResponseAllowingError(lastCorrelationId, ArchiveException.UNKNOWN_REPLICATION);
         }
         finally
         {
@@ -1902,7 +1997,7 @@ public final class AeronArchive implements AutoCloseable
         }
     }
 
-    private boolean pollForStopRecordingResponse(final long correlationId)
+    private boolean pollForResponseAllowingError(final long correlationId, final int allowedErrorCode)
     {
         final long deadlineNs = nanoClock.nanoTime() + messageTimeoutNs;
         final ControlResponsePoller poller = controlResponsePoller;
@@ -1923,7 +2018,7 @@ public final class AeronArchive implements AutoCloseable
                 final long relevantId = poller.relevantId();
                 if (poller.correlationId() == correlationId)
                 {
-                    if (relevantId == ArchiveException.UNKNOWN_SUBSCRIPTION)
+                    if (relevantId == allowedErrorCode)
                     {
                         return false;
                     }
@@ -2076,7 +2171,7 @@ public final class AeronArchive implements AutoCloseable
          * Minor version of the network protocol from client to archive. If these don't match then some features may
          * not be available.
          */
-        public static final int PROTOCOL_MINOR_VERSION = 6;
+        public static final int PROTOCOL_MINOR_VERSION = 7;
 
         /**
          * Patch version of the network protocol from client to archive. If these don't match then bug fixes may not
@@ -2140,7 +2235,7 @@ public final class AeronArchive implements AutoCloseable
         /**
          * Stream id within a channel for sending control messages to a driver local archive.
          */
-        public static final int LOCAL_CONTROL_STREAM_ID_DEFAULT = 11;
+        public static final int LOCAL_CONTROL_STREAM_ID_DEFAULT = CONTROL_STREAM_ID_DEFAULT;
 
         /**
          * Channel for receiving control response messages from an archive.
@@ -2477,11 +2572,8 @@ public final class AeronArchive implements AutoCloseable
                 lock = new ReentrantLock();
             }
 
-            final ChannelUri uri = ChannelUri.parse(controlRequestChannel);
-            uri.put(CommonContext.TERM_LENGTH_PARAM_NAME, Integer.toString(controlTermBufferLength));
-            uri.put(CommonContext.MTU_LENGTH_PARAM_NAME, Integer.toString(controlMtuLength));
-            uri.put(CommonContext.SPARSE_PARAM_NAME, Boolean.toString(controlTermBufferSparse));
-            controlRequestChannel = uri.toString();
+            controlRequestChannel = applyDefaultParams(controlRequestChannel);
+            controlResponseChannel = applyDefaultParams(controlResponseChannel);
         }
 
         /**
@@ -2900,6 +2992,26 @@ public final class AeronArchive implements AutoCloseable
                 CloseHelper.close(aeron);
             }
         }
+
+        private String applyDefaultParams(final String channel)
+        {
+            final ChannelUri channelUri = ChannelUri.parse(channel);
+
+            if (!channelUri.containsKey(CommonContext.TERM_LENGTH_PARAM_NAME))
+            {
+                channelUri.put(CommonContext.TERM_LENGTH_PARAM_NAME, Integer.toString(controlTermBufferLength));
+            }
+            if (!channelUri.containsKey(CommonContext.MTU_LENGTH_PARAM_NAME))
+            {
+                channelUri.put(CommonContext.MTU_LENGTH_PARAM_NAME, Integer.toString(controlMtuLength));
+            }
+            if (!channelUri.containsKey(CommonContext.SPARSE_PARAM_NAME))
+            {
+                channelUri.put(CommonContext.SPARSE_PARAM_NAME, Boolean.toString(controlTermBufferSparse));
+            }
+
+            return channelUri.toString();
+        }
     }
 
     /**
@@ -3074,7 +3186,10 @@ public final class AeronArchive implements AutoCloseable
         {
             if (deadlineNs - nanoClock.nanoTime() < 0)
             {
-                throw new TimeoutException("Archive connect timeout: step=" + step);
+                throw new TimeoutException("Archive connect timeout: step=" + step +
+                    (step < 2 ?
+                    " publication.uri=" + archiveProxy.publication().channel() :
+                    " subscription.uri=" + controlResponsePoller.subscription().channel()));
             }
 
             if (Thread.currentThread().isInterrupted())

@@ -42,6 +42,7 @@ import org.agrona.concurrent.status.CountersReader;
 import java.io.File;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.aeron.Aeron.NULL_VALUE;
 import static io.aeron.archive.client.AeronArchive.NULL_POSITION;
@@ -60,6 +61,7 @@ public class TestNode implements AutoCloseable
     TestNode(final Context context, final DataCollector dataCollector)
     {
         mediaDriver = TestMediaDriver.launch(context.mediaDriverContext, null);
+
         clusteredArchive = ClusteredArchive.launch(
             mediaDriver.aeronDirectoryName(),
             context.archiveContext,
@@ -160,7 +162,7 @@ public class TestNode implements AutoCloseable
         }
         catch (final Throwable t)
         {
-            if (error == null)
+            if (null == error)
             {
                 error = t;
             }
@@ -183,42 +185,23 @@ public class TestNode implements AutoCloseable
 
     public Cluster.Role role()
     {
-        final ConsensusModule.Context context = clusteredArchive.consensusModule().context();
-        if (context.aeron().isClosed())
-        {
-            return Cluster.Role.FOLLOWER;
-        }
-
-        return Cluster.Role.get(context.clusterNodeRoleCounter());
+        return Cluster.Role.get(clusteredArchive.consensusModule().context().clusterNodeRoleCounter());
     }
 
     ElectionState electionState()
     {
-        final ConsensusModule.Context context = clusteredArchive.consensusModule().context();
-        if (context.aeron().isClosed())
-        {
-            return ElectionState.CLOSED;
-        }
-
-        return ElectionState.get(context.electionStateCounter());
+        return ElectionState.get(clusteredArchive.consensusModule().context().electionStateCounter());
     }
 
     ConsensusModule.State moduleState()
     {
-        final ConsensusModule.Context context = clusteredArchive.consensusModule().context();
-        if (context.aeron().isClosed())
-        {
-            return ConsensusModule.State.CLOSED;
-        }
-
-        return ConsensusModule.State.get(context.moduleStateCounter());
+        return ConsensusModule.State.get(clusteredArchive.consensusModule().context().moduleStateCounter());
     }
 
     public long commitPosition()
     {
-        final ConsensusModule.Context context = clusteredArchive.consensusModule().context();
-        final Counter counter = context.commitPositionCounter();
-        if (counter.isClosed() || context.aeron().isClosed())
+        final Counter counter = clusteredArchive.consensusModule().context().commitPositionCounter();
+        if (counter.isClosed())
         {
             return NULL_POSITION;
         }
@@ -307,19 +290,18 @@ public class TestNode implements AutoCloseable
         }
     }
 
-    @SuppressWarnings("NonAtomicOperationOnVolatileField")
     public static class TestService extends StubClusteredService
     {
         static final int SNAPSHOT_FRAGMENT_COUNT = 500;
         static final int SNAPSHOT_MSG_LENGTH = 1000;
 
         private int index;
-        private volatile int activeSessionCount;
-        private volatile int messageCount;
         private volatile boolean wasSnapshotTaken = false;
         private volatile boolean wasSnapshotLoaded = false;
         private volatile boolean hasReceivedUnexpectedMessage = false;
         private volatile Cluster.Role roleChangedTo = null;
+        private final AtomicInteger activeSessionCount = new AtomicInteger();
+        private final AtomicInteger messageCount = new AtomicInteger();
 
         TestService index(final int index)
         {
@@ -334,12 +316,12 @@ public class TestNode implements AutoCloseable
 
         int activeSessionCount()
         {
-            return activeSessionCount;
+            return activeSessionCount.get();
         }
 
         public int messageCount()
         {
-            return messageCount;
+            return messageCount.get();
         }
 
         public boolean wasSnapshotTaken()
@@ -378,10 +360,10 @@ public class TestNode implements AutoCloseable
 
             if (null != snapshotImage)
             {
-                activeSessionCount = cluster.clientSessions().size();
+                activeSessionCount.set(cluster.clientSessions().size());
 
                 final FragmentHandler handler =
-                    (buffer, offset, length, header) -> messageCount = buffer.getInt(offset);
+                    (buffer, offset, length, header) -> messageCount.set(buffer.getInt(offset));
 
                 int fragmentCount = 0;
                 while (true)
@@ -461,19 +443,19 @@ public class TestNode implements AutoCloseable
                 }
             }
 
-            ++messageCount;
+            messageCount.incrementAndGet();
         }
 
         public void onTakeSnapshot(final ExclusivePublication snapshotPublication)
         {
             final UnsafeBuffer buffer = new UnsafeBuffer(new byte[SNAPSHOT_MSG_LENGTH]);
-            buffer.putInt(0, messageCount);
-            buffer.putInt(SNAPSHOT_MSG_LENGTH - SIZE_OF_INT, messageCount);
+            buffer.putInt(0, messageCount.get());
+            buffer.putInt(SNAPSHOT_MSG_LENGTH - SIZE_OF_INT, messageCount.get());
 
             for (int i = 0; i < SNAPSHOT_FRAGMENT_COUNT; i++)
             {
                 idleStrategy.reset();
-                while (snapshotPublication.offer(buffer, 0, SNAPSHOT_MSG_LENGTH) <= 0)
+                while (snapshotPublication.offer(buffer, 0, SNAPSHOT_MSG_LENGTH) < 0)
                 {
                     idleStrategy.idle();
                 }
@@ -485,13 +467,13 @@ public class TestNode implements AutoCloseable
         public void onSessionOpen(final ClientSession session, final long timestamp)
         {
             super.onSessionOpen(session, timestamp);
-            activeSessionCount += 1;
+            activeSessionCount.incrementAndGet();
         }
 
         public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason)
         {
             super.onSessionClose(session, timestamp, closeReason);
-            activeSessionCount -= 1;
+            activeSessionCount.decrementAndGet();
         }
 
         public void onRoleChange(final Cluster.Role newRole)
@@ -516,5 +498,12 @@ public class TestNode implements AutoCloseable
         {
             this.service = service;
         }
+    }
+
+    public String toString()
+    {
+        return "TestNode{" +
+            "consensusModule=" + clusteredArchive.consensusModule() +
+            '}';
     }
 }

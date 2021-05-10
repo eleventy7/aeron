@@ -80,12 +80,17 @@ final class LogAdapter implements ControlledFragmentHandler
 
     int poll(final long boundPosition)
     {
+        if (null == image)
+        {
+            return 0;
+        }
+
         return image.boundedControlledPoll(this, boundPosition, fragmentLimit);
     }
 
     boolean isImageClosed()
     {
-        return image.isClosed();
+        return null == image || image.isClosed();
     }
 
     Image image()
@@ -103,11 +108,11 @@ final class LogAdapter implements ControlledFragmentHandler
         this.image = image;
     }
 
-    void asyncRemoveDestination(final String destination)
+    void removeDestination(final String destination)
     {
-        if (null != image)
+        if (null != image && !image.subscription().isClosed())
         {
-            image.subscription().asyncRemoveDestination(destination);
+            image.subscription().removeDestination(destination);
         }
     }
 

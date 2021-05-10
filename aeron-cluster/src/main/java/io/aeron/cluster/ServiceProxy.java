@@ -49,7 +49,6 @@ final class ServiceProxy implements AutoCloseable
     }
 
     void joinLog(
-        final long leadershipTermId,
         final long logPosition,
         final long maxLogPosition,
         final int memberId,
@@ -71,7 +70,6 @@ final class ServiceProxy implements AutoCloseable
             {
                 joinLogEncoder
                     .wrapAndApplyHeader(bufferClaim.buffer(), bufferClaim.offset(), messageHeaderEncoder)
-                    .leadershipTermId(leadershipTermId)
                     .logPosition(logPosition)
                     .maxLogPosition(maxLogPosition)
                     .memberId(memberId)
@@ -180,7 +178,7 @@ final class ServiceProxy implements AutoCloseable
                 .archiveEndpoint(member.archiveEndpoint());
         }
 
-        final int length = clusterMembersExtendedResponseEncoder.encodedLength() + MessageHeaderEncoder.ENCODED_LENGTH;
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + clusterMembersExtendedResponseEncoder.encodedLength();
 
         int attempts = SEND_ATTEMPTS;
         do

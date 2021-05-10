@@ -22,9 +22,6 @@ import net.bytebuddy.asm.Advice;
 import static io.aeron.agent.ClusterEventCode.*;
 import static io.aeron.agent.ClusterEventLogger.LOGGER;
 
-/**
- * Intercepts calls in the cluster which relate to state changes.
- */
 class ClusterInterceptor
 {
     static class ElectionStateChange
@@ -41,9 +38,13 @@ class ClusterInterceptor
         @Advice.OnMethodEnter
         static void onNewLeadershipTerm(
             final long logLeadershipTermId,
-            final long logTruncatePosition,
+            final long nextLeadershipTermId,
+            final long nextTermBaseLogPosition,
+            final long nextLogPosition,
             final long leadershipTermId,
+            final long termBaseLogPosition,
             final long logPosition,
+            final long leaderRecordingId,
             final long timestamp,
             final int leaderMemberId,
             final int logSessionId,
@@ -51,9 +52,13 @@ class ClusterInterceptor
         {
             LOGGER.logNewLeadershipTerm(
                 logLeadershipTermId,
-                logTruncatePosition,
+                nextLeadershipTermId,
+                nextTermBaseLogPosition,
+                nextLogPosition,
                 leadershipTermId,
+                termBaseLogPosition,
                 logPosition,
+                leaderRecordingId,
                 timestamp,
                 leaderMemberId,
                 logSessionId,
@@ -77,6 +82,29 @@ class ClusterInterceptor
         static void roleChange(final Cluster.Role oldRole, final Cluster.Role newRole, final int memberId)
         {
             LOGGER.logStateChange(ROLE_CHANGE, oldRole, newRole, memberId);
+        }
+    }
+
+    static class CanvassPosition
+    {
+        @Advice.OnMethodEnter
+        static void onCanvassPosition(
+            final long logLeadershipTermId,
+            final long logPosition,
+            final long leadershipTermId,
+            final int followerMemberId)
+        {
+            LOGGER.logCanvassPosition(logLeadershipTermId, leadershipTermId, logPosition, followerMemberId);
+        }
+    }
+
+    static class RequestVote
+    {
+        @Advice.OnMethodEnter
+        static void onRequestVote(
+            final long logLeadershipTermId, final long logPosition, final long candidateTermId, final int candidateId)
+        {
+            LOGGER.logRequestVote(logLeadershipTermId, logPosition, candidateTermId, candidateId);
         }
     }
 }

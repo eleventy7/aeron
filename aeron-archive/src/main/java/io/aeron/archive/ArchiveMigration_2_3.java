@@ -15,10 +15,7 @@
  */
 package io.aeron.archive;
 
-import org.agrona.DirectBuffer;
-import org.agrona.IoUtil;
-import org.agrona.LangUtil;
-import org.agrona.SemanticVersion;
+import org.agrona.*;
 import org.agrona.collections.MutableInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -43,11 +40,17 @@ class ArchiveMigration_2_3 implements ArchiveMigrationStep
 {
     private static final int MINIMUM_VERSION = SemanticVersion.compose(3, 0, 0);
 
+    /**
+     * {@inheritDoc}
+     */
     public int minimumVersion()
     {
         return MINIMUM_VERSION;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public void migrate(
         final PrintStream stream,
         final ArchiveMarkFile markFile,
@@ -73,7 +76,7 @@ class ArchiveMigration_2_3 implements ArchiveMigrationStep
                 }
                 finally
                 {
-                    IoUtil.unmap(mappedByteBuffer);
+                    BufferUtil.free(mappedByteBuffer);
                 }
                 channel.truncate(offset); // trim file to actual length used
             }
@@ -92,6 +95,9 @@ class ArchiveMigration_2_3 implements ArchiveMigrationStep
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     public String toString()
     {
         return "to " + fullVersionString(minimumVersion());
@@ -156,10 +162,7 @@ class ArchiveMigration_2_3 implements ArchiveMigrationStep
     }
 
     private int writeCatalogHeader(
-        final UnsafeBuffer buffer,
-        final int version,
-        final long nextRecordingId,
-        final int alignment)
+        final UnsafeBuffer buffer, final int version, final long nextRecordingId, final int alignment)
     {
         final int catalogHeaderLength = 32;
 

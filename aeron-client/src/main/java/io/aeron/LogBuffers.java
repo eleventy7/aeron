@@ -16,8 +16,8 @@
 package io.aeron;
 
 import io.aeron.logbuffer.LogBufferDescriptor;
+import org.agrona.BufferUtil;
 import org.agrona.CloseHelper;
-import org.agrona.IoUtil;
 import org.agrona.LangUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -40,7 +40,7 @@ import static java.nio.file.StandardOpenOption.*;
  *
  * @see io.aeron.logbuffer.LogBufferDescriptor
  */
-public class LogBuffers implements AutoCloseable
+public final class LogBuffers implements AutoCloseable
 {
     private static final EnumSet<StandardOpenOption> FILE_OPTIONS = EnumSet.of(READ, WRITE, SPARSE);
     private static final FileAttribute<?>[] NO_ATTRIBUTES = new FileAttribute[0];
@@ -228,8 +228,10 @@ public class LogBuffers implements AutoCloseable
         {
             final MappedByteBuffer mappedByteBuffer = mappedByteBuffers[i];
             mappedByteBuffers[i] = null;
-            IoUtil.unmap(mappedByteBuffer);
+            BufferUtil.free(mappedByteBuffer);
         }
+
+        logMetaDataBuffer.wrap(0, 0);
 
         if (error != null)
         {

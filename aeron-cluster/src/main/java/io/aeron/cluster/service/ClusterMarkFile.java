@@ -44,7 +44,7 @@ import static io.aeron.Aeron.NULL_VALUE;
 public final class ClusterMarkFile implements AutoCloseable
 {
     public static final int MAJOR_VERSION = 0;
-    public static final int MINOR_VERSION = 2;
+    public static final int MINOR_VERSION = 3;
     public static final int PATCH_VERSION = 0;
     public static final int SEMANTIC_VERSION = SemanticVersion.compose(MAJOR_VERSION, MINOR_VERSION, PATCH_VERSION);
 
@@ -185,6 +185,16 @@ public final class ClusterMarkFile implements AutoCloseable
     }
 
     /**
+     * Check if the {@link MarkFile} is closed.
+     *
+     * @return true if the {@link MarkFile} is closed.
+     */
+    public boolean isClosed()
+    {
+        return markFile.isClosed();
+    }
+
+    /**
      * Get the current value of a candidate term id if a vote is placed in an election.
      *
      * @return the current candidate term id within an election after voting or {@link Aeron#NULL_VALUE} if
@@ -196,7 +206,7 @@ public final class ClusterMarkFile implements AutoCloseable
     }
 
     /**
-     * Record the fact that a node has voted in a current election for a candidate so it can survive a restart.
+     * Record the fact that a node is aware of an election so it can survive a restart.
      *
      * @param candidateTermId to record that a vote has taken place.
      * @param fileSyncLevel   as defined by cluster file sync level.
@@ -208,6 +218,27 @@ public final class ClusterMarkFile implements AutoCloseable
         {
             markFile.mappedByteBuffer().force();
         }
+    }
+
+    /**
+     * Record the fact that a node is aware of an election so it can survive a restart.
+     *
+     * @param candidateTermId to record that a vote has taken place.
+     * @param fileSyncLevel   as defined by cluster file sync level.
+     * @return the max of the existing and proposed candidateTermId.
+     */
+    public long proposeMaxCandidateTermId(final long candidateTermId, final int fileSyncLevel)
+    {
+        final long existingCandidateTermId = buffer.getLongVolatile(
+            MarkFileHeaderEncoder.candidateTermIdEncodingOffset());
+
+        if (candidateTermId > existingCandidateTermId)
+        {
+            candidateTermId(candidateTermId, fileSyncLevel);
+            return candidateTermId;
+        }
+
+        return existingCandidateTermId;
     }
 
     /**
@@ -273,7 +304,10 @@ public final class ClusterMarkFile implements AutoCloseable
      */
     public void updateActivityTimestamp(final long nowMs)
     {
-        markFile.timestampOrdered(nowMs);
+        if (!markFile.isClosed())
+        {
+            markFile.timestampOrdered(nowMs);
+        }
     }
 
     /**
@@ -413,5 +447,16 @@ public final class ClusterMarkFile implements AutoCloseable
             decoder.consensusModuleStreamId(),
             decoder.aeronDirectory(),
             decoder.controlChannel());
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public String toString()
+    {
+        return "ClusterMarkFile{" +
+            "semanticVersion=" + SemanticVersion.toString(SEMANTIC_VERSION) +
+            ", markFile=" + markFile.markFile() +
+            '}';
     }
 }

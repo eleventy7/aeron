@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
+import java.nio.file.NoSuchFileException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
@@ -1403,7 +1404,7 @@ public class Aeron implements AutoCloseable
          */
         public void close()
         {
-            IoUtil.unmap(cncByteBuffer);
+            BufferUtil.free(cncByteBuffer);
             this.cncByteBuffer = null;
             super.close();
         }
@@ -1415,16 +1416,6 @@ public class Aeron implements AutoCloseable
 
             while (null == toDriverBuffer)
             {
-                while (!cncFile.exists() || cncFile.length() <= 0)
-                {
-                    if (epochClock.time() > deadlineMs)
-                    {
-                        throw new DriverTimeoutException("CnC file not created: " + cncFile.getAbsolutePath());
-                    }
-
-                    sleep(Configuration.IDLE_SLEEP_MS);
-                }
-
                 cncByteBuffer = waitForFileMapping(cncFile, epochClock, deadlineMs);
                 cncMetaDataBuffer = CncFileDescriptor.createMetaDataBuffer(cncByteBuffer);
 
@@ -1448,7 +1439,7 @@ public class Aeron implements AutoCloseable
 
                 if (!CncFileDescriptor.isCncFileLengthSufficient(cncMetaDataBuffer, cncByteBuffer.capacity()))
                 {
-                    IoUtil.unmap(cncByteBuffer);
+                    BufferUtil.free(cncByteBuffer);
                     cncByteBuffer = null;
                     cncMetaDataBuffer = null;
 
@@ -1477,7 +1468,7 @@ public class Aeron implements AutoCloseable
                         throw new DriverTimeoutException("no driver heartbeat detected");
                     }
 
-                    IoUtil.unmap(cncByteBuffer);
+                    BufferUtil.free(cncByteBuffer);
                     cncByteBuffer = null;
                     cncMetaDataBuffer = null;
 
@@ -1494,6 +1485,16 @@ public class Aeron implements AutoCloseable
     {
         while (true)
         {
+            while (!file.exists() || file.length() < CncFileDescriptor.META_DATA_LENGTH)
+            {
+                if (clock.time() > deadlineMs)
+                {
+                    throw new DriverTimeoutException("CnC file not created: " + file.getAbsolutePath());
+                }
+
+                sleep(Configuration.IDLE_SLEEP_MS);
+            }
+
             try (FileChannel fileChannel = FileChannel.open(file.toPath(), READ, WRITE))
             {
                 final long fileSize = fileChannel.size();
@@ -1510,6 +1511,9 @@ public class Aeron implements AutoCloseable
                 }
 
                 return fileChannel.map(READ_WRITE, 0, fileSize);
+            }
+            catch (final NoSuchFileException ignore)
+            {
             }
             catch (final IOException ex)
             {

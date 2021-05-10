@@ -25,7 +25,9 @@ int aeron_receive_destination_create(
     aeron_driver_context_t *context,
     aeron_counters_manager_t *counters_manager,
     int64_t registration_id,
-    int32_t channel_status_counter_id)
+    int32_t channel_status_counter_id,
+    size_t socket_rcvbuf,
+    size_t socket_sndbuf)
 {
     aeron_receive_destination_t *_destination = NULL;
 
@@ -35,7 +37,6 @@ int aeron_receive_destination_create(
         return -1;
     }
 
-    _destination->conductor_fields.udp_channel = channel;
     _destination->transport.fd = -1;
     _destination->data_paths = &context->receiver_proxy->receiver->data_paths;
     _destination->transport.data_paths = _destination->data_paths;
@@ -47,8 +48,8 @@ int aeron_receive_destination_create(
         &channel->local_data,
         channel->interface_index,
         0 != channel->multicast_ttl ? channel->multicast_ttl : context->multicast_ttl,
-        context->socket_rcvbuf,
-        context->socket_sndbuf,
+        socket_rcvbuf,
+        socket_sndbuf,
         context,
         AERON_UDP_CHANNEL_TRANSPORT_AFFINITY_RECEIVER) < 0)
     {
@@ -103,6 +104,8 @@ int aeron_receive_destination_create(
     aeron_counter_set_ordered(
         _destination->local_sockaddr_indicator.value_addr, AERON_COUNTER_CHANNEL_ENDPOINT_STATUS_ACTIVE);
 
+    // Only take ownership of the channel if the receive destination is successfully created.
+    _destination->conductor_fields.udp_channel = channel;
     *destination = _destination;
 
     return 0;

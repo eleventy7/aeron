@@ -64,6 +64,14 @@ aeron_driver_context_bindings_clientd_entry_t;
 
 typedef void (*aeron_driver_name_resolver_on_neighbor_change_func_t)(const struct sockaddr_storage *addr);
 
+typedef void (*aeron_driver_flow_control_strategy_on_receiver_change_func_t)(
+    int64_t receiver_id,
+    int32_t session_id,
+    int32_t stream_id,
+    size_t channel_length,
+    const char *channel,
+    size_t receiver_count);
+
 typedef struct aeron_driver_context_stct
 {
     char *aeron_dir;                                        /* aeron.dir */
@@ -214,6 +222,9 @@ typedef struct aeron_driver_context_stct
     aeron_driver_name_resolver_on_neighbor_change_func_t name_resolution_on_neighbor_added_func;
     aeron_driver_name_resolver_on_neighbor_change_func_t name_resolution_on_neighbor_removed_func;
 
+    aeron_driver_flow_control_strategy_on_receiver_change_func_t flow_control_on_receiver_added_func;
+    aeron_driver_flow_control_strategy_on_receiver_change_func_t flow_control_on_receiver_removed_func;
+
     aeron_driver_termination_validator_func_t termination_validator_func;
     void *termination_validator_state;
 
@@ -238,6 +249,14 @@ typedef struct aeron_driver_context_stct
     aeron_dl_loaded_libs_state_t *dynamic_libs;
     aeron_driver_context_bindings_clientd_entry_t *bindings_clientd_entries;
     size_t num_bindings_clientd_entries;
+    struct
+    {
+        size_t default_so_sndbuf;
+        size_t max_so_sndbuf;
+        size_t default_so_rcvbuf;
+        size_t max_so_rcvbuf;
+    }
+    os_buffer_lengths;
 }
 aeron_driver_context_t;
 
@@ -258,6 +277,8 @@ size_t aeron_cnc_length(aeron_driver_context_t *context);
 
 int aeron_driver_context_bindings_clientd_create_entries(aeron_driver_context_t *context);
 int aeron_driver_context_bindings_clientd_delete_entries(aeron_driver_context_t *context);
+int aeron_driver_context_bindings_clientd_find_first_free_index(aeron_driver_context_t *context);
+int aeron_driver_context_bindings_clientd_find(aeron_driver_context_t *context, const char *name);
 
 inline void aeron_cnc_version_signal_cnc_ready(aeron_cnc_metadata_t *metadata, int32_t cnc_version)
 {

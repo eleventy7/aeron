@@ -66,6 +66,9 @@ final class ClientCommandAdapter implements MessageHandler
         return toDriverCommands.read(this, Configuration.COMMAND_DRAIN_LIMIT);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @SuppressWarnings("MethodLength")
     public void onMessage(final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length)
     {
@@ -257,21 +260,21 @@ final class ClientCommandAdapter implements MessageHandler
                     final ControlProtocolException ex = new ControlProtocolException(
                         ErrorCode.UNKNOWN_COMMAND_TYPE_ID, "command typeId=" + msgTypeId);
 
-                    clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
                     recordError(ex);
+                    clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
                 }
             }
         }
         catch (final ControlProtocolException ex)
         {
-            clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
             recordError(ex);
+            clientProxy.onError(correlationId, ex.errorCode(), ex.getMessage());
         }
         catch (final Exception ex)
         {
+            recordError(ex);
             final String errorMessage = ex.getClass().getName() + " : " + ex.getMessage();
             clientProxy.onError(correlationId, GENERIC_ERROR, errorMessage);
-            recordError(ex);
         }
     }
 
